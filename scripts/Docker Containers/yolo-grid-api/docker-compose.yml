@@ -1,0 +1,9 @@
+services:
+  yolo-api:
+    build: .
+    container_name: yolo-grid-api-c
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

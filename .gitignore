@@ -1,0 +1,11 @@
+.env
+*.odt
+*.mp3
+*.wav
+download/
+downloaded_files/
+yolo5/
+*.pdf
+.vscode/
+__pycache__/
+downloaded_files/

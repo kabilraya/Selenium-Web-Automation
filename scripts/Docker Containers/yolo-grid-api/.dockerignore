@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.git
+
+*.md
+.vscode
+.idea
+*.log
+yolo5/runs/
+yolo5/__pycache__/
