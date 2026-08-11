@@ -2,7 +2,12 @@ from sqlalchemy.sql import exists
 from sqlalchemy.orm.session import Session
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(
+    0,
+    os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+)
 from scripts.model.smi_model import SMI
 def check_for_duplicate_hash(session: Session, hash: str) -> bool:
     """
