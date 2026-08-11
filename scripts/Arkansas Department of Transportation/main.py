@@ -9,6 +9,9 @@ from lxml import html
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 import time
 from utils.get_env import get_env
+from utils.md5_generator import generate_md5_hash
+from utils.session_creator import create_database_session
+from utils.db_duplicate_hash_checker import check_for_duplicate_hash
 from functions import download_files, regex_date_filter
 from urllib.parse import urljoin
 from datetime import datetime
@@ -17,9 +20,11 @@ script_path = os.path.abspath(__file__)
 script_directory = os.path.dirname(script_path)
 
 env_path = os.path.join(script_directory,".env")
-[
+[   ecgains,
+    module_name,
     main_url,
-    download_path
+    download_path,
+    database_url
 ] = get_env(env_path)
 
 with SB (
@@ -52,24 +57,38 @@ with SB (
     for node_idx, node in enumerate(project_nodes,start=1):
         summary = node.xpath("./summary")[0]
 
-        number = summary.xpath("./text()[1]")[0].strip()
+        id = str(summary.xpath("./text()[1]")[0].strip())
         institution_name = summary.xpath("./text()[2]")[0].strip()
 
         # to extract the file content
         project = {}
         project[node_idx] = {
-            "bid_number" : number,
+            "bid_number" : id,
             "institution_name" : institution_name,
             "files_info" : {} 
         }
         file_links = node.xpath(".//a")
-
+        if not file_links:
+            continue
         for file_idx, file_url in enumerate(file_links,start = 1):
             file_title = file_url.text_content().strip()
             url = file_url.get("href","").strip() 
             if not url:
                 continue
 
+            download_name = url.split("/")[-1]
+            file_hash = generate_md5_hash(ecgain = ecgains, bidno = id, filename = download_name )
+            #create a session of database to check for duplication of hash and kill the session immediately
+            try:
+                session, _ = create_database_session(database_url=database_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                session.close()
+                if is_duplicate_hash:
+                    continue
+            except Exception as e:
+                print(f"Session creation failed {e}")
+                continue
+            
             new_file_index = len(project[node_idx]["files_info"]) + 1
 
             url = urljoin("https://ardot.gov",url)
@@ -79,7 +98,7 @@ with SB (
                                   script_directory=script_directory,
                                   download_path=download_path,
                                   file_index=new_file_index,
-                                  bid_index=node_idx)
+                                  file_hash=file_hash)
             project[node_idx]["files_info"].update(file)
         projects.append(project)
 

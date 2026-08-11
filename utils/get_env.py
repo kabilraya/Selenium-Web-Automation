@@ -25,11 +25,16 @@ def get_env(env_path:str) -> tuple:
                - aws_secret_access_key (str): The value of the AWS_SECRET_ACCESS_KEY variable.
     """
     load_dotenv(env_path)
+    ecgains = os.getenv("ECGAINS")
+    module_name = os.getenv("MODULE_NAME")
 
     main_url = os.getenv("MAIN_URL")
     download_path = os.getenv("DOWNLOAD_PATH")
-
+    database_url = os.getenv("SMI_DATA_URL")
     return (
+        ecgains,
+        module_name,
         main_url,
-        download_path
+        download_path,
+        database_url
     )

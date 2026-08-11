@@ -12,7 +12,7 @@ def create_database_session(database_url: str) -> Session:
     Returns:
         Session: The database session.
     """
-    engine = create_engine(database_url, echo=False,connect_args={"ssl_disabled": True})
+    engine = create_engine(database_url, echo=False)
 
     Session = sessionmaker(bind=engine)
 
