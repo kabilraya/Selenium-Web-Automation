@@ -22,9 +22,8 @@ from utils.extract_and_insertion import extract_from_json_and_insert
 #make all the path 
 script_path = os.path.abspath(__file__)
 script_directory = os.path.dirname(script_path)
-
-
 env_path = os.path.join(script_directory,".env")
+
 [   ecgains,
     module_name,
     main_url,
@@ -74,6 +73,11 @@ with SB (
         bid_title = summary.xpath("./text()[3]")[0].strip()
 
         # to extract the file content
+
+        file_links = node.xpath(".//a")
+        if not file_links:
+            continue
+
         bid_details[node_idx] = {
         "bid_no": id,
         "bid_title": bid_title,          
@@ -81,9 +85,6 @@ with SB (
         "agency_name": institution_name,
         "files_info": {}
     }
-        file_links = node.xpath(".//a")
-        if not file_links:
-            continue
         for file_idx, file_url in enumerate(file_links,start = 1):
             file_title = file_url.text_content().strip()
             url = file_url.get("href","").strip() 
@@ -115,15 +116,26 @@ with SB (
                                   file_hash=file_hash)
             bid_details[node_idx]["files_info"].update(file)
 
-    json_path = os.path.join(download_path, "projects.json")
+    has_downloads = any(
+        bid["file_info"]
+        for key, bid in bid_details.items()
+        if isinstance(key, int)
+        )
+    
+    if not has_downloads:
+        print("No new files downloaded. Skipping JSON creation and database insertion.")
+    else:
+        json_path = os.path.join(download_path, "projects.json")
 
-    with open(json_path, "w", encoding="utf-8") as json_file:
-        json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
+        with open(json_path, "w", encoding="utf-8") as json_file:
+            json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
-    print(f"JSON saved to: {json_path}") 
+        print(f"JSON saved to: {json_path}")
 
-    #insertion into database using ORM mapping       
-    bid_counts = extract_from_json_and_insert(json_path=json_path, db_url=database_url)
+        bid_counts = extract_from_json_and_insert(
+            json_path=json_path,
+            db_url=database_url
+        )
 
-    print(bid_counts)
+        print(bid_counts)
 

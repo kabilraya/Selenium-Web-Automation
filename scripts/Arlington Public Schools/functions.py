@@ -9,6 +9,7 @@ import shutil
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from utils.file_splitter import split_pdf
+from utils.iconverter import get_iconverted_value
 
 def regex_date_filter(raw_due_date:str) -> str:
     try:
@@ -32,7 +33,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, bid_index):
+def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -44,6 +45,8 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
         bytes_size = os.path.getsize(file_path)
         mb_size = bytes_size / (1024 * 1024) 
         file_name_from_path = os.path.splitext(os.path.basename(file_path))[0]
+        file_with_ext = os.path.basename(file_path)
+        iconverted = get_iconverted_value(file_with_ext)
         if mb_size > 50:
             split_files = split_pdf(file_path=file_path)
 
@@ -55,7 +58,9 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
                     "file_url" : file_url,
-                    "file_size" : size_in_mb
+                    "file_size" : size_in_mb,
+                    "md5_hash" : file_hash,
+                    "iconverted" : iconverted
                 }
                 file_index += 1
 
@@ -64,7 +69,9 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
                 "file_name" : file_name_from_path,
                 "sanitized_file_name" : file_name_from_path,
                 "file_url" : file_url,
-                "file_size" : mb_size
+                "file_size" : mb_size,
+                "md5_hash" : file_hash,
+                "iconverted" : iconverted
             }
             file_index += 1 
 
