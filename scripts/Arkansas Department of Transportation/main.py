@@ -81,7 +81,7 @@ with SB (
         bid_details[node_idx] = {
         "bid_no": id,
         "bid_title": bid_title,          
-        "bid_due_date": "None",        
+        "bid_due_date": "Not Specified",        
         "agency_name": institution_name,
         "files_info": {}
     }
@@ -99,6 +99,7 @@ with SB (
                 is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
                 session.close()
                 if is_duplicate_hash:
+                    print("Hash Duplication found")
                     continue
             except Exception as e:
                 print(f"Session creation failed {e}")
@@ -117,7 +118,7 @@ with SB (
             bid_details[node_idx]["files_info"].update(file)
 
     has_downloads = any(
-        bid["file_info"]
+        bid["files_info"]
         for key, bid in bid_details.items()
         if isinstance(key, int)
         )

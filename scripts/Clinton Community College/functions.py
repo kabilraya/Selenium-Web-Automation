@@ -9,6 +9,7 @@ import shutil
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from utils.file_splitter import split_pdf
+from utils.iconverter import get_iconverted_value
 
 def regex_date_filter(raw_due_date:str) -> str:
     try:
@@ -30,7 +31,7 @@ def santitize_file_name(url:str) -> str:
     root = re.sub("[^a-zA-Z0-9_.-]","_",root)
     return f"{root}{ext}"
 
-def download_files(sb, file_url, script_directory,download_path,file_index, bid_index):
+def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -41,7 +42,9 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
         nonlocal file_index
         bytes_size = os.path.getsize(file_path)
         mb_size = bytes_size / (1024 * 1024) 
-
+        file_name_from_path = os.path.splitext(os.path.basename(file_path))[0]
+        file_with_ext = os.path.basename(file_path)
+        iconverted = get_iconverted_value(file_with_ext)
         if mb_size > 50:
             split_files = split_pdf(file_path=file_path)
 
@@ -53,48 +56,74 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
                     "file_url" : file_url,
-                    "file_size" : size_in_mb
+                    "file_size" : size_in_mb,
+                    "md5_hash" : file_hash,
+                    "iconverted" : iconverted
                 }
                 file_index += 1
 
         else:
             file[file_index] = {
-                "file_name" : file_name,
-                "sanitized_file_name" : file_name,
+                "file_name" : os.path.basename(file_path),
+                "sanitized_file_name" : os.path.basename(file_path),
                 "file_url" : file_url,
-                "file_size" : mb_size
+                "file_size" : mb_size,
+                "md5_hash" : file_hash,
+                "iconverted" : iconverted
             }
             file_index += 1
-
-    decoded_url = unquote(file_url)
-    print(decoded_url)
-
-    filename = os.path.basename(decoded_url.split("?")[0].strip()) or f"file_{file_index}"
-    print(filename)
-
-    new_file_name = santitize_file_name(filename)
-    print(new_file_name)
-
     #we take the current window handle id to return to this handle
     #Here "main_window" is the main tab we open at the beginning of the scraping
     main_window =  sb.driver.current_window_handle
     # Seleniumbase automatically creates a directory named "downloaded_files" to keep the downloaded files
+    downloaded_files_dir = os.path.join(script_directory, "downloaded_files")
+    os.makedirs(downloaded_files_dir, exist_ok=True)
+    before_files = set(os.listdir(downloaded_files_dir))
+
     sb.execute_script("window.open(arguments[0], '_blank');",file_url)
     sb.sleep(1)
     sb.switch_to_window(sb.driver.window_handles[-1])
     
     #try downloading the file
-    try:
-        sb.assert_downloaded_file(filename, timeout = 180, browser = False)
-    except Exception as e:
-        print("Dowloading failed")
+    partial_exts = (".crdownload", ".part", ".tmp", ".download")
+    timeout = 180
+    poll_interval = 0.5
+    deadline = time.time() + timeout
+    actual_file_name = None
 
+    while time.time() < deadline:
+        current_files = set(os.listdir(downloaded_files_dir))
+        new_files = current_files - before_files
+        completed = [f for f in new_files if not f.lower().endswith(partial_exts)]
+
+        if completed:
+            completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)
+            candidate = completed[0]
+            candidate_path = os.path.join(downloaded_files_dir, candidate)
+            size1 = os.path.getsize(candidate_path)
+            time.sleep(0.3)
+            size2 = os.path.getsize(candidate_path)
+            if size1 == size2 and size1 > 0:
+                actual_file_name = candidate
+                break
+
+        time.sleep(poll_interval)
+
+    if actual_file_name is None:
+        print("Downloading failed")
         try:
-            sb.close()
+            sb.assert_downloaded_file(actual_file_name,timeout=120, browser = False)
         except Exception as e:
-            pass
-        sb.switch_to_window(main_window)
-        return {}
+            print(f"Downloading Failed with the following exception: {e}")
+
+            try:
+                sb.close()
+            except Exception as e:
+                pass
+            sb.switch_to_window(main_window)
+            return {}
+
+    print(actual_file_name)
 
     #close the download tab and return to the main window
     try:
@@ -104,17 +133,19 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
 
     sb.switch_to_window(main_window)
 
+    new_file_name = santitize_file_name(actual_file_name)
+    print(new_file_name)
 
 
     source_path = os.path.join(script_directory,"downloaded_files",new_file_name)
 
     if not os.path.exists(source_path):
-        source_path = os.path.join(script_directory,"downloaded_files",filename)
+        source_path = os.path.join(script_directory,"downloaded_files",actual_file_name)
 
     if not os.path.exists(source_path):
         #ask the seleniumbase session to tell what file you got (name of the file in the downloaded files)
 
-        print(f"{filename} was not found in the downloaded_files")
+        print(f"{actual_file_name} was not found in the downloaded_files")
         print(f"SB dowloaded files as {sb.get_downloaded_files(browser = False)}")
 
         return{}
@@ -162,7 +193,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
         os.remove(final_path)
 
     else:
-        process_single_file(download_path)
+        process_single_file(final_path)
     return file
                                
 

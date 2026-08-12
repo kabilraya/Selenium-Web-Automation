@@ -130,6 +130,7 @@ with SB (
                 is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
                 session.close()
                 if is_duplicate_hash:
+                    print("Duplicate Hash Found!! Skipping....")
                     continue
             except Exception as e:
                 print(f"Session creation failed {e}")
@@ -151,7 +152,7 @@ with SB (
     #Checking if any files got downloaded to proceed with the JSON dumping and database works
 
     has_downloads = any(
-    bid["file_info"]
+    bid["files_info"]
     for key, bid in bid_details.items()
     if isinstance(key, int)
     )

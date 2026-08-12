@@ -18,6 +18,7 @@ from typing import Tuple, Dict, Optional
 from io import BytesIO
 import pyautogui
 from pyautogui import ImageNotFoundException
+from utils.iconverter import get_iconverted_value
 from seleniumbase.common.exceptions import ElementNotVisibleException
 COCO_CLASSES = {
     1: "person",
@@ -452,7 +453,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, bid_index):
+def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -464,6 +465,8 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
         bytes_size = os.path.getsize(file_path)
         mb_size = bytes_size / (1024 * 1024) 
         file_name_from_path = os.path.splitext(os.path.basename(file_path))[0]
+        file_with_ext = os.path.basename(file_path)
+        iconverted = get_iconverted_value(file_with_ext)
         if mb_size > 50:
             split_files = split_pdf(file_path=file_path)
 
@@ -475,16 +478,20 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
                     "file_url" : file_url,
-                    "file_size" : size_in_mb
+                    "file_size" : size_in_mb,
+                    "md5_hash" : file_hash,
+                    "iconverted" : iconverted
                 }
                 file_index += 1
 
         else:
             file[file_index] = {
-                "file_name" : file_name_from_path,
-                "sanitized_file_name" : file_name_from_path,
+                "file_name" : os.path.basename(file_path),
+                "sanitized_file_name" : os.path.basename(file_path),
                 "file_url" : file_url,
-                "file_size" : mb_size
+                "file_size" : mb_size,
+                "md5_hash" : file_hash,
+                "iconverted" : iconverted
             }
             file_index += 1 
 
@@ -548,20 +555,24 @@ def download_files(sb, file_url, script_directory,download_path,file_index, bid_
     if actual_file_name is None:
         print("Downloading failed")
         try:
-            sb.close()
+            sb.assert_downloaded_file(actual_file_name,timeout=120, browser = False)
         except Exception as e:
-            pass
-        sb.switch_to_window(main_window)
-        return {}
+            print(f"Downloading Failed with the following exception: {e}")
 
+            try:
+                sb.close()
+            except Exception as e:
+                pass
+            sb.switch_to_window(main_window)
+            return {}
     
-
+    print(actual_file_name)
+    
     #close the download tab and return to the main window
     try:
         sb.close()
     except Exception as e:
         pass
-
     sb.switch_to_window(main_window)
 
     new_file_name = santitize_file_name(actual_file_name)
