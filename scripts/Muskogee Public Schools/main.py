@@ -29,7 +29,12 @@ env_path = os.path.join(script_directory,".env")
     module_name,
     main_url,
     download_path,
-    database_url
+    server_path,
+    database_url,
+    region_name,
+    endpoint_url,
+    aws_access_key_id,
+    aws_secret_access_key
 ] = get_env(env_path)
 
 with SB (
@@ -71,7 +76,8 @@ with SB (
         "ecgains": ecgains,
         "module_name": module_name,
         "base_url" : main_url,
-        "download_path" : download_path,    
+        "download_path" : download_path,
+        "server_path" : server_path    
     }
     
     for idx, bid_link in enumerate(bid_links,start=1):
@@ -134,7 +140,11 @@ with SB (
 
         bid_counts = extract_from_json_and_insert(
             json_path=json_path,
-            db_url=database_url
+            db_url=database_url,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key
         )
 
         print(bid_counts)        

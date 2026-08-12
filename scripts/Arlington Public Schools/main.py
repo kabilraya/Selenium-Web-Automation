@@ -25,12 +25,17 @@ script_directory = os.path.dirname(script_path)
 env_path = os.path.join(script_directory,".env")
 
 #Importing all the enviroment variables
-[   ecgains,
+[
+    ecgains,
     module_name,
     main_url,
     download_path,
-    database_url
-
+    server_path,
+    database_url,
+    region_name,
+    endpoint_url,
+    aws_access_key_id,
+    aws_secret_access_key
 ] = get_env(env_path)
 
 with SB (
@@ -59,7 +64,8 @@ with SB (
     "ecgains": ecgains,
     "module_name": module_name,
     "base_url" : main_url,
-    "download_path" : download_path,   
+    "download_path" : download_path,
+    "server_path" : server_path   
     }
 
     bid_row = tree.xpath("//h3[normalize-space()='Current Solicitations']/following::table[1]//tr[position()>1]")
@@ -169,7 +175,11 @@ with SB (
 
         bid_counts = extract_from_json_and_insert(
             json_path=json_path,
-            db_url=database_url
+            db_url=database_url,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key
         )
 
         print(bid_counts)         

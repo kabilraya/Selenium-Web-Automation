@@ -1,10 +1,17 @@
 import json
 import os
+from urllib.parse import quote
 from .db_duplicate_bid_checker import check_duplicate_bids
 from .session_creator import create_database_session
 from .insert_into_db import insert_into_db
-def extract_from_json_and_insert(json_path,db_url):
-    keys_to_skip = ["ecgains","module_name","base_url","download_path"]
+from .boto_client import boto_client_insertion
+def extract_from_json_and_insert(json_path,
+                                db_url,
+                                region_name,
+                                endpoint_url,
+                                aws_access_key_id,
+                                aws_secret_access_key):
+    keys_to_skip = ["ecgains","module_name","base_url","download_path","server_path"]
 
     try:
         with open(json_path,"r") as f:
@@ -16,6 +23,7 @@ def extract_from_json_and_insert(json_path,db_url):
         module_name = json_data["module_name"]
         base_url = json_data["base_url"]
         download_path = json_data["download_path"]
+        server_path = json_data["server_path"]
         total_bid = 0
         total_new_bid = 0
         total_new_bid_files = 0
@@ -25,6 +33,18 @@ def extract_from_json_and_insert(json_path,db_url):
                 is_bid_duplicate = check_duplicate_bids(session=session, bid_no=value["bid_no"])
 
                 for index in range(1,len(value["files_info"])+1):
+                    #insert into S3 bucket
+
+                    boto_client_insertion(
+                        bid_no=value["bid_no"],
+                        download_dir=download_path,
+                        filename=value["files_info"][str(index)]["sanitized_file_name"],
+                        server_path=server_path,
+                        region_name=region_name,
+                        endpoint_url=endpoint_url,
+                        aws_access_key_id=aws_access_key_id,
+                        aws_secret_access_key=aws_secret_access_key
+                    )
                     # insert_into_db()
                     insert_into_db(session=session,
                                    ecgains=ecgains,
@@ -35,7 +55,8 @@ def extract_from_json_and_insert(json_path,db_url):
                                    base_url= base_url,
                                    file_url= value["files_info"][str(index)]["file_url"],
                                    module_name=module_name,
-                                   file_name = value["files_info"][str(index)]["sanitized_file_name"],
+                                   file_name = value["files_info"][str(index)]["file_name"],
+                                   cloud_url=os.path.join(server_path, quote(str(value["bid_no"])[:25]), value["files_info"][str(index)]["sanitized_file_name"]).replace("\\", "/"),
                                    iconverted= value["files_info"][str(index)]["iconverted"],
                                    file_size=value["files_info"][str(index)]["file_size"]
                                    )

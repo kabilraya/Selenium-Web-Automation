@@ -30,11 +30,22 @@ def get_env(env_path:str) -> tuple:
 
     main_url = os.getenv("MAIN_URL")
     download_path = os.getenv("DOWNLOAD_PATH")
+    server_path = os.getenv("SERVER_PATH")
     database_url = os.getenv("SMI_DATA_URL")
+    region_name = os.getenv("REGION_NAME")
+    endpoint_url = os.getenv("ENDPOINT_URL")
+    aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+    aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+
     return (
         ecgains,
         module_name,
         main_url,
         download_path,
-        database_url
+        server_path,
+        database_url,
+        region_name,
+        endpoint_url,
+        aws_access_key_id,
+        aws_secret_access_key
     )

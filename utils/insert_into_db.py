@@ -20,6 +20,7 @@ def insert_into_db(
         file_url,
         module_name,
         file_name,
+        cloud_url,
         iconverted,
         file_size,
 ):
@@ -33,6 +34,7 @@ def insert_into_db(
         stURL1 = base_url,
         stURL2 = file_url,
         stModuleName = module_name,
+        stFileCloudURL = cloud_url,
         stFileName = file_name,
         iConverted = iconverted,
         stFileSize = file_size,

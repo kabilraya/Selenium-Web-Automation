@@ -22,6 +22,7 @@ class SMI(Base):
     stURL2 : Mapped[str] = mapped_column(Text, nullable=False)
     stModuleName : Mapped[str] = mapped_column(String(100), nullable=False)
     stFileName : Mapped[str] = mapped_column(String(200), nullable=False)
+    stFileCloudURL: Mapped[str] = mapped_column(String(400),nullable = False)
     iConverted: Mapped[int] = mapped_column(Integer, nullable=False)
     stFileSize : Mapped[str] = mapped_column(String(50),nullable = False)
     stBidType: Mapped[str] = mapped_column(String(25), nullable=False, default="NPL")
