@@ -10,3 +10,4 @@ yolo5/
 __pycache__/
 downloaded_files/
 *.json
+*.odt#
