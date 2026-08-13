@@ -9,3 +9,4 @@ yolo5/
 .vscode/
 __pycache__/
 downloaded_files/
+*.json

@@ -66,7 +66,7 @@ with SB (
     tree = html.fromstring(page_source)
 
     
-    project_nodes = tree.xpath('//div[@class="bidItems listItems"]/div[position()>1]')
+    project_nodes = tree.xpath("//div[@class='view-content']/div[.//a[normalize-space()='New York State Worldwide Consultancy, RFP'] ]/preceding-sibling::div")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -78,57 +78,55 @@ with SB (
     }
 
     for node_idx, node in enumerate(project_nodes,start=1):
-        bid_title = node.xpath("./div[1]/span[1]")[0].text_content().strip()
-        bid_no = node.xpath("./div[1]/span[2]/strong/following-sibling::text()[1]")[0].strip()
-        bid_due_date = node.xpath("./div[2]/div[2]/span[2]")[0].text_content().strip()
-        print(f"{bid_title} {bid_no} {bid_due_date}")
+        bid_title = node.xpath(".//h1")[0].text_content().strip()
+        bid_no = bid_title[:25]
         # to extract the file content
         
-        formatted_date = regex_date_filter(bid_due_date)
-        print(formatted_date)
-        date_obj = None
-        if formatted_date:
-            try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
-            except ValueError as e:
-                try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
-                except ValueError as e:
-                    print(f"Cannot Parse the date.. Failed due to: {e}")
-                    continue
+    #     formatted_date = regex_date_filter(bid_due_date)
+    #     print(formatted_date)
+    #     date_obj = None
+    #     if formatted_date:
+    #         try:
+    #             date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+    #         except ValueError as e:
+    #             try:
+    #                 date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+    #             except ValueError as e:
+    #                 print(f"Cannot Parse the date.. Failed due to: {e}")
+    #                 continue
 
-        if date_obj and date_obj < datetime.today().date():
-            continue
+    #     if date_obj and date_obj < datetime.today().date():
+    #         continue
 
-        #Get all the links on that node
-        file_links = node.xpath(".//a")
+    #     #Get all the links on that node
+        file_links = node.xpath(".//h1//a")
         if not file_links:
             continue
         # If any one link is found we make a dictionary         
         bid_details[node_idx] = {
         "bid_no": bid_no,
         "bid_title": bid_title,          
-        "bid_due_date": formatted_date,        
+        "bid_due_date": "Not Specified",        
         "agency_name": module_name,
         "files_info": {}
     }
-        for idx, table_url in enumerate(file_links,start = 1):
-            url = table_url.get("href","").strip() 
+        for idx, redirect_url in enumerate(file_links,start = 1):
+            url = redirect_url.get("href","").strip() 
             if not url:
                 continue
-            url = urljoin("https://www.chestersc.org/",url)
+            url = urljoin("https://esd.ny.gov/",url)
             #open the link
             sb.uc_open_with_reconnect(url)
             page_source = sb.get_page_source()
             tree = html.fromstring(page_source)
 
-            links = tree.xpath("//div[@class='relatedDocuments'][1]/a")
+            links = tree.xpath("//section[@class='rfp__resources']//a")
 
             for file_idx, file in enumerate(links, start = 1):
                 file_url = file.get("href","").strip()
                 download_name = file_url.split("/")[-1]
                 print(download_name)
-                file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+                file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name)
                 #create a session of database to check for duplication of hash and kill the session immediately
                 try:
                     session, _ = create_database_session(database_url=smi_data_url)
@@ -143,7 +141,7 @@ with SB (
                 
                 new_file_index = len(bid_details[node_idx]["files_info"]) + 1
     
-                file_url = urljoin("https://www.chestersc.org/",file_url)
+                file_url = urljoin("https://esd.ny.gov/",file_url)
 
                 file = download_files(sb = sb,
                                       file_url=file_url,
@@ -162,7 +160,7 @@ with SB (
     if not has_downloads:
         print("No new files downloaded. Skipping JSON creation and database insertion.")
     else:
-        json_path = os.path.join(script_directory, "projects.json")
+        json_path = os.path.join(download_path, "projects.json")
 
         with open(json_path, "w", encoding="utf-8") as json_file:
             

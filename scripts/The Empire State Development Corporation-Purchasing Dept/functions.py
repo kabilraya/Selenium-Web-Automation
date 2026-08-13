@@ -62,7 +62,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
                     "file_url" : file_url,
-                    "file_size" : f"{size_in_mb:.2f} MB",
+                    "file_size" : f"{size_in_mb:.2f}",
                     "md5_hash" : file_hash,
                     "iconverted" : iconverted
                 }
@@ -73,7 +73,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
                 "file_name" : os.path.basename(file_path),
                 "sanitized_file_name" : os.path.basename(file_path),
                 "file_url" : file_url,
-                "file_size" : f"{mb_size:.2f} MB",
+                "file_size" : f"{mb_size:.2f}",
                 "md5_hash" : file_hash,
                 "iconverted" : iconverted
             }
