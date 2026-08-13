@@ -31,7 +31,8 @@ def get_env(env_path:str) -> tuple:
     main_url = os.getenv("MAIN_URL")
     download_path = os.getenv("DOWNLOAD_PATH")
     server_path = os.getenv("SERVER_PATH")
-    database_url = os.getenv("SMI_DATA_URL")
+    smi_data_url = os.getenv("SMI_DATA_URL")
+    smi_record_url = os.getenv("SMI_RECORD_URL")
     region_name = os.getenv("REGION_NAME")
     endpoint_url = os.getenv("ENDPOINT_URL")
     aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
@@ -43,7 +44,8 @@ def get_env(env_path:str) -> tuple:
         main_url,
         download_path,
         server_path,
-        database_url,
+        smi_data_url,
+        smi_record_url,
         region_name,
         endpoint_url,
         aws_access_key_id,

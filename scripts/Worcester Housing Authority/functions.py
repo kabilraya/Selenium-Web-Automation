@@ -206,7 +206,7 @@ def check_captcha_error(sb) -> Optional[str]:
 
     return None
 
-def solve_image_captch(sb):
+def solve_image_captcha(sb):
     iframe_one_xpath = "//iframe[@title='reCAPTCHA']"
     iframe_two_xpath = "//iframe[contains(@title, 'challenge')]"
     checkbox_xpath = "//span[contains(@class, 'recaptcha-checkbox')]"
