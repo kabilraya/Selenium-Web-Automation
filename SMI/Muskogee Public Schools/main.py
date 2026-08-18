@@ -1,0 +1,154 @@
+from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.by import By
+from seleniumbase import SB
+import sys
+import os 
+import json
+from lxml import html
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..","..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import time
+from kabil_utils.get_env import get_env
+from kabil_utils.md5_generator import generate_md5_hash
+from kabil_utils.session_creator import create_database_session
+from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
+from functions import download_files, regex_date_filter
+from urllib.parse import urljoin
+from datetime import datetime
+from model.smi_model import SMI
+from kabil_utils.extract_and_insertion import extract_from_json_and_insert
+
+#make all the path 
+script_path = os.path.abspath(__file__)
+script_directory = os.path.dirname(script_path)
+env_path = os.path.join(script_directory,".env")
+
+[
+    ecgains,
+    module_name,
+    main_url,
+    download_path,
+    server_path,
+    database_url,
+    region_name,
+    endpoint_url,
+    aws_access_key_id,
+    aws_secret_access_key
+] = get_env(env_path)
+
+download_path=os.path.join(script_directory, "download")
+
+with SB (
+    uc = True,
+    test = True,
+    headless = False,
+    incognito = False,
+    undetectable= True,
+    xvfb=False,
+    guest_mode=False,
+    disable_features = "ChromePDFViewer",
+    external_pdf = True,
+    locale = "en",
+) as sb:
+    sb.uc_open_with_reconnect(main_url)
+    
+    sb.uc_gui_click_captcha()
+    sb.sleep(3)
+    # print(type(sb))
+    # print(hasattr(sb, "uc_open_with_reconnect"))
+    page_source = sb.get_page_source()
+    time.sleep(10)
+    tree = html.fromstring(page_source)
+
+    button_xpath = '//div[normalize-space()="Request for Proposals & Bids"]/ancestor::button[1]'
+
+    sb.scroll_to(button_xpath)
+    sb.sleep(1)
+    sb.click(button_xpath)
+    
+
+    page_source = sb.get_page_source()
+    time.sleep(10)
+    tree = html.fromstring(page_source)
+    
+    bid_links = tree.xpath("//p[normalize-space()='DISTRICT BIDS BELOW ARE HANDLED THROUGH THE EDUCATION SERVICE CENTER:']/following::p[1]/a[position() < last()]")
+
+    bid_details = {
+        "ecgains": ecgains,
+        "module_name": module_name,
+        "base_url" : main_url,
+        "download_path" : download_path,
+        "server_path" : server_path    
+    }
+    
+    for idx, bid_link in enumerate(bid_links,start=1):
+        link_description = bid_link.text_content().strip()
+        bid_details[idx] = {
+            "bid_no" : "Not Specified",
+            "bid_title" : link_description,
+            "bid_due_date" : "Not Specified",
+            "agency_name" : "Not Specified",
+            "files_info" : {} 
+        }
+        url = bid_link.get("href","").strip()
+        print(url)
+        
+        if not url:
+            continue
+        download_name = url.split("/")[-1]
+        file_hash = generate_md5_hash(ecgain = ecgains, bidno = id, filename = download_name )
+        #create a session of database to check for duplication of hash and kill the session immediately
+        try:
+            session, _ = create_database_session(database_url=database_url)
+            is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+            session.close()
+            if is_duplicate_hash:
+                print("Hash Duplication!! Skipping...")
+                continue
+        except Exception as e:
+            print(f"Session creation failed {e}")
+            continue
+
+        new_file_index = len(bid_details[idx]["files_info"]) + 1
+        url = urljoin("https://aptg.co",url)
+        file = download_files(sb = sb,
+                              file_url=url,
+                              script_directory=script_directory,
+                              download_path=download_path,
+                              file_index=new_file_index,
+                              file_hash=file_hash)
+        bid_details[idx]["files_info"].update(file)
+        
+
+    
+    
+
+    has_downloads = any(
+            bid["files_info"]
+            for key, bid in bid_details.items()
+            if isinstance(key, int)
+            )
+        
+    if not has_downloads:
+        print("No new files downloaded. Skipping JSON creation and database insertion.")
+    else:
+        json_path = os.path.join(download_path, "projects.json")
+
+        with open(json_path, "w", encoding="utf-8") as json_file:
+            json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
+
+        print(f"JSON saved to: {json_path}")
+
+        bid_counts = extract_from_json_and_insert(
+            json_path=json_path,
+            db_url=database_url,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key
+        )
+
+        print(bid_counts)        
+    
+
