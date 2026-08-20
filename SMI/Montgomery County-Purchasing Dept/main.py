@@ -61,14 +61,10 @@ with SB (
     
     sb.uc_gui_click_captcha()
     sb.sleep(3)
-    # print(type(sb))
-    # print(hasattr(sb, "uc_open_with_reconnect"))
     page_source = sb.get_page_source()
-    time.sleep(10)
+    time.sleep(5)
     tree = html.fromstring(page_source)
-
-    
-    project_nodes = tree.xpath('//table/tbody/tr[.//td[normalize-space()="CLOSED – IFB Withdrawn"]][1]/preceding-sibling::tr')
+    all_bids = tree.xpath("//div[@class='post clearfix']/div[@class='table-responsive clearfix'][2]//tbody/tr[position()>2]")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -79,15 +75,20 @@ with SB (
     "server_path" : server_path
     }
 
-    for node_idx, node in enumerate(project_nodes,start=1):
-        bid_title = node.xpath("./td[3]")[0].text_content().strip()
-        bid_no = node.xpath("./td[2]/p")[0].text_content().strip()
-        bid_due_date = node.xpath("./td[5]")[0].text_content().strip()
-        
-        # to extract the file content
+    for node_idx, node in enumerate(all_bids,start=1):
+        strong_tag_count = node.xpath("./td[1]//strong")
+        if len(strong_tag_count) == 2:
+            bid_title = node.xpath("./td[1]//strong[2]/text()[1]")[0].strip()
+        else:
+            bid_title = node.xpath("./td[1]//strong/text()[2]")[0].strip()
+        bid_no = node.xpath("./td[1]//strong/text()[1]")[0].strip()
+        span_date = node.xpath(".//td[2]//span")
+        if span_date:
+            bid_due_date = node.xpath("./td[2]//span/span")[0].text_content().strip()
+        else:
+            bid_due_date = node.xpath("./td[2]//strong/text()[1]")[0].strip()
         
         formatted_date = regex_date_filter(bid_due_date)
-        # print(formatted_date)
         date_obj = None
         if formatted_date:
             try:
@@ -100,12 +101,15 @@ with SB (
                     continue
 
         if date_obj and date_obj < datetime.today().date():
+            
             continue
 
-        #Get all the links on that node
-        file_links = node.xpath("./td[2]//a")
+        print(f"Due Date: {formatted_date}")
+        print(f"Bid Title: {bid_title} \nBid No.: {bid_no}")
+        file_links = node.xpath(".//a")
         if not file_links:
             continue
+        
         # If any one link is found we make a dictionary         
         bid_details[node_idx] = {
         "bid_no": bid_no,
@@ -115,13 +119,12 @@ with SB (
         "files_info": {}
     }
     
-
-        for file_idx, file_url in enumerate(file_links, start = 1):
-            url = file_url.get("href","").strip()
-            download_name = url.split("/")[-1]
+        for file_idx, file in enumerate(file_links, start = 1):
+            file_url = file.get("href","").strip()
+            download_name = file_url.split("/")[-1].strip()
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
-            #create a session of database to check for duplication of hash and kill the session immediately
+            # create a session of database to check for duplication of hash and kill the session immediately
             try:
                 session, _ = create_database_session(database_url=smi_data_url)
                 is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
@@ -134,10 +137,9 @@ with SB (
                 continue
             
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-
-            url = urljoin("https://parks.ny.gov/",url)
+            file_url = urljoin("https://www.mctx.org/",file_url)
             file = download_files(sb = sb,
-                                  file_url=url,
+                                  file_url=file_url,
                                   script_directory=script_directory,
                                   download_path=download_path,
                                   file_index=new_file_index,
@@ -193,13 +195,13 @@ with SB (
         )
 
         update_value(
-                    db_url=smi_record_url,
-                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
-                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                    )
+                db_url=smi_record_url,
+                query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
+                condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                )
         delete_files_in_directory(download_path)
-    
+
         print("Scraping Successful")
 
     

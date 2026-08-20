@@ -21,7 +21,8 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+from kabil_utils.vpn_disconnet import disconnect_vpn
+from kabil_utils.vpn_required_db_insertion import extract_from_json_and_add_to_db
 #make all the path 
 start_time = time.perf_counter()
 
@@ -135,17 +136,6 @@ with SB (
                 print(download_name)
                 file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
                 # create a session of database to check for duplication of hash and kill the session immediately
-                try:
-                    session, _ = create_database_session(database_url=smi_data_url)
-                    is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
-                    session.close()
-                    if is_duplicate_hash:
-                        print("Hash Duplication found")
-                        continue
-                except Exception as e:
-                    print(f"Session creation failed {e}")
-                    continue
-                
                 new_file_index = len(bid_details[node_idx]["files_info"]) + 1
 
                 file_url = urljoin("https://www.elmhurst.org/",file_url)
@@ -173,8 +163,11 @@ with SB (
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
+        print("Disconnecting from VPN connection")
+        disconnect_vpn()
 
-        bid_counts = extract_from_json_and_insert(
+        
+        bid_counts = extract_from_json_and_add_to_db(
             json_path=json_path,
             db_url=smi_data_url,
             region_name=region_name,
@@ -205,15 +198,15 @@ with SB (
             timeelapsed=total_execution_time
         )
 
-    update_value(
+        update_value(
                 db_url=smi_record_url,
                 query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
                 new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
                 condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
                 )
-    delete_files_in_directory(download_path)
+        delete_files_in_directory(download_path)
 
-    print("Scraping Successful")
+        print("Scraping Successful")
 
     
 

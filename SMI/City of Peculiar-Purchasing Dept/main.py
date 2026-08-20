@@ -213,15 +213,15 @@ with SB (
             timeelapsed=total_execution_time
         )
 
-    update_value(
-                db_url=smi_record_url,
-                query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-                new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
-                condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                )
-    delete_files_in_directory(download_path)
-
-    print("Scraping Successful")
+        update_value(
+                    db_url=smi_record_url,
+                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
+                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                    )
+        delete_files_in_directory(download_path)
+    
+        print("Scraping Successful")
 
     
 

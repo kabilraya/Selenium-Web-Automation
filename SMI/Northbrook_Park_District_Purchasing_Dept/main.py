@@ -68,7 +68,7 @@ with SB (
     tree = html.fromstring(page_source)
 
     
-    project_nodes = tree.xpath('//table/tbody/tr[.//td[normalize-space()="CLOSED – IFB Withdrawn"]][1]/preceding-sibling::tr')
+    project_nodes = tree.xpath("//div[./h2[normalize-space()='Current Bids & RFPs']]//tbody/tr")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -80,48 +80,32 @@ with SB (
     }
 
     for node_idx, node in enumerate(project_nodes,start=1):
-        bid_title = node.xpath("./td[3]")[0].text_content().strip()
-        bid_no = node.xpath("./td[2]/p")[0].text_content().strip()
-        bid_due_date = node.xpath("./td[5]")[0].text_content().strip()
+        bid_title = node.xpath("./td[2]")[0].text_content().strip()
+        
+        bid_no = node.xpath("./td[1]")[0].text_content().strip()
+        bid_due_date = "Not Specified"
         
         # to extract the file content
         
-        formatted_date = regex_date_filter(bid_due_date)
-        # print(formatted_date)
-        date_obj = None
-        if formatted_date:
-            try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
-            except ValueError as e:
-                try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
-                except ValueError as e:
-                    print(f"Cannot Parse the date.. Failed due to: {e}")
-                    continue
-
-        if date_obj and date_obj < datetime.today().date():
-            continue
-
+        
         #Get all the links on that node
-        file_links = node.xpath("./td[2]//a")
-        if not file_links:
-            continue
+        file_links = node.xpath(".//a")
         # If any one link is found we make a dictionary         
         bid_details[node_idx] = {
         "bid_no": bid_no,
         "bid_title": bid_title,          
-        "bid_due_date": formatted_date,        
+        "bid_due_date": bid_due_date,        
         "agency_name": module_name,
         "files_info": {}
     }
-    
-
-        for file_idx, file_url in enumerate(file_links, start = 1):
-            url = file_url.get("href","").strip()
-            download_name = url.split("/")[-1]
+        if not file_links:
+            continue
+        for file_idx, file in enumerate(file_links, start = 1):
+            file_url = file.get("href","").strip()
+            download_name = file_url.split("/")[-1]
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
-            #create a session of database to check for duplication of hash and kill the session immediately
+            # create a session of database to check for duplication of hash and kill the session immediately
             try:
                 session, _ = create_database_session(database_url=smi_data_url)
                 is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
@@ -134,10 +118,9 @@ with SB (
                 continue
             
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-
-            url = urljoin("https://parks.ny.gov/",url)
+            file_url = urljoin("https://www.nbparks.org/",file_url)
             file = download_files(sb = sb,
-                                  file_url=url,
+                                  file_url=file_url,
                                   script_directory=script_directory,
                                   download_path=download_path,
                                   file_index=new_file_index,
