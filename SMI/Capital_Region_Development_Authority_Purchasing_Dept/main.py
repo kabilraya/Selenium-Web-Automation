@@ -140,46 +140,46 @@ with SB (
 
         print(f"JSON saved to: {json_path}")
 
-    #     bid_counts = extract_from_json_and_insert(
-    #         json_path=json_path,
-    #         db_url=smi_data_url,
-    #         region_name=region_name,
-    #         endpoint_url=endpoint_url,
-    #         aws_access_key_id=aws_access_key_id,
-    #         aws_secret_access_key=aws_secret_access_key,
-    #     )
-    #     end_time = time.perf_counter()
-    #     total_execution_time = round((end_time - start_time) / 60)
-    #     total_bids = bid_counts["total_bid"]
-    #     total_new_bid = bid_counts["total_new_bid"]
-    #     total_new_bid_file = bid_counts["total_new_bid_file"]
-    #     print(f"Total bids: {total_bids}")
-    #     print(f"Total new bids: {total_new_bid}")
-    #     print(f"Total new bid files: {total_new_bid_file}")
-    #     print(f"Process took around {total_execution_time}")
+        bid_counts = extract_from_json_and_insert(
+            json_path=json_path,
+            db_url=smi_data_url,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+        )
+        end_time = time.perf_counter()
+        total_execution_time = round((end_time - start_time) / 60)
+        total_bids = bid_counts["total_bid"]
+        total_new_bid = bid_counts["total_new_bid"]
+        total_new_bid_file = bid_counts["total_new_bid_file"]
+        print(f"Total bids: {total_bids}")
+        print(f"Total new bids: {total_new_bid}")
+        print(f"Total new bid files: {total_new_bid_file}")
+        print(f"Process took around {total_execution_time}")
 
-    #     #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
 
-    #     session, _ = create_database_session(database_url=smi_record_url)
-    #     insert_into_record_db(
-    #         session = session,
-    #         ecgain=ecgains,
-    #         module_name=module_name.split(".")[0],
-    #         total_bid= total_bids,
-    #         total_new_bid=total_new_bid,
-    #         total_new_bid_files=total_new_bid_file,
-    #         timeelapsed=total_execution_time
-    #     )
+        session, _ = create_database_session(database_url=smi_record_url)
+        insert_into_record_db(
+            session = session,
+            ecgain=ecgains,
+            module_name=module_name.split(".")[0],
+            total_bid= total_bids,
+            total_new_bid=total_new_bid,
+            total_new_bid_files=total_new_bid_file,
+            timeelapsed=total_execution_time
+        )
 
-    #     update_value(
-    #             db_url=smi_record_url,
-    #             query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-    #             new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
-    #             condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-    #             )
-    #     delete_files_in_directory(download_path)
+        update_value(
+                db_url=smi_record_url,
+                query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
+                condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                )
+        delete_files_in_directory(download_path)
 
-    #     print("Scraping Successful")
+        print("Scraping Successful")
 
     
 

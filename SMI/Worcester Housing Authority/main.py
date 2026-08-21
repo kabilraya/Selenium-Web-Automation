@@ -18,8 +18,14 @@ from urllib.parse import urljoin
 from datetime import datetime
 from model.smi_model import SMI
 from kabil_utils.extract_and_insertion import extract_from_json_and_insert
-
+from kabil_utils.vpn_disconnet import disconnect_vpn
+from kabil_utils.vpn_required_db_insertion import extract_from_json_and_add_to_db
+from kabil_utils.record_data_insertion import insert_into_record_db
+from kabil_utils.db_value_updater import update_value
+from kabil_utils.file_remover import delete_files_in_directory
 #make all the path 
+
+start_time = time.perf_counter()
 script_path = os.path.abspath(__file__)
 script_directory = os.path.dirname(script_path)
 env_path = os.path.join(script_directory,".env")
@@ -30,7 +36,8 @@ env_path = os.path.join(script_directory,".env")
     main_url,
     download_path,
     server_path,
-    database_url,
+    smi_data_url,
+    smi_record_url,
     region_name,
     endpoint_url,
     aws_access_key_id,
@@ -77,7 +84,7 @@ with SB (
         if len(data) < 7:
             continue
         bid_no = data[0].text_content().strip()
-        title = data[1].text_content().strip()
+        title = data[2].text_content().strip()
         due_date = data[5].text_content().strip()
         
         date_obj = None
@@ -120,18 +127,9 @@ with SB (
             if not url:
                 continue
             download_name = url.split("/")[-1]
-            file_hash = generate_md5_hash(ecgain = ecgains, bidno = id, filename = download_name )
+            print(download_name)
+            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
             #create a session of database to check for duplication of hash and kill the session immediately
-            try:
-                session, _ = create_database_session(database_url=database_url)
-                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
-                session.close()
-                if is_duplicate_hash:
-                    print("Hash Duplication!! Skipping...")
-                    continue
-            except Exception as e:
-                print(f"Session creation failed {e}")
-                continue
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
             url = urljoin("https://worcesterha.org",url)
             file = download_files(sb = sb,
@@ -144,30 +142,65 @@ with SB (
         
 
     has_downloads = any(
-                bid["files_info"]
-                for key, bid in bid_details.items()
-                if isinstance(key, int)
-                )
-            
+            bid["files_info"]
+            for key, bid in bid_details.items()
+            if isinstance(key, int)
+            )
+    
     if not has_downloads:
         print("No new files downloaded. Skipping JSON creation and database insertion.")
     else:
-        json_path = os.path.join(download_path, "projects.json")
+        json_path = os.path.join(script_directory, "projects.json")
 
         with open(json_path, "w", encoding="utf-8") as json_file:
+            
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
+        print("Disconnecting from VPN connection")
+        disconnect_vpn()
 
-        bid_counts = extract_from_json_and_insert(
+        time.sleep(5)
+        
+        bid_counts = extract_from_json_and_add_to_db(
             json_path=json_path,
-            db_url=database_url,
+            db_url=smi_data_url,
             region_name=region_name,
             endpoint_url=endpoint_url,
             aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key
+            aws_secret_access_key=aws_secret_access_key,
+        )
+        end_time = time.perf_counter()
+        total_execution_time = round((end_time - start_time) / 60)
+        total_bids = bid_counts["total_bid"]
+        total_new_bid = bid_counts["total_new_bid"]
+        total_new_bid_file = bid_counts["total_new_bid_file"]
+        print(f"Total bids: {total_bids}")
+        print(f"Total new bids: {total_new_bid}")
+        print(f"Total new bid files: {total_new_bid_file}")
+        print(f"Process took around {total_execution_time}")
+
+        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+
+        session, _ = create_database_session(database_url=smi_record_url)
+        insert_into_record_db(
+            session = session,
+            ecgain=ecgains,
+            module_name=module_name.split(".")[0],
+            total_bid= total_bids,
+            total_new_bid=total_new_bid,
+            total_new_bid_files=total_new_bid_file,
+            timeelapsed=total_execution_time
         )
 
-        print(bid_counts)       
-    
+        update_value(
+                db_url=smi_record_url,
+                query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
+                condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                )
+        delete_files_in_directory(download_path)
+
+        print("Scraping Successful")       
+
 

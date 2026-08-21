@@ -328,6 +328,7 @@ def audio_solver(sb):
             audio = recognizer.record(source)
 
         text = recognizer.recognize_google(audio)
+        print(text)
         return text
     except Exception as e:
         print("Failed to recognize the voice")
@@ -424,8 +425,16 @@ def solve_captcha(sb):
             sb.click("//button[@id='recaptcha-verify-button']")
 
             sb.switch_to_default_content()
-            time.sleep(3)
-            sb.click("//input[@type='submit']")
+            sb.wait_for_element_present(
+    "//button[@type='submit']",
+    timeout=15
+)
+
+            sb.wait_for_element_visible(
+                "//button[@type='submit']",
+                timeout=15
+            )
+            sb.click("//button[@type='submit']")
             return True
     else:
         return False
@@ -477,8 +486,8 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
                 file[file_index] = {
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
-                    "file_url" : file_url,
-                    "file_size" : size_in_mb,
+                    "file_url" : url,
+                    "file_size" : f"{mb_size:.2f} MB",
                     "md5_hash" : file_hash,
                     "iconverted" : iconverted
                 }
@@ -488,8 +497,8 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
             file[file_index] = {
                 "file_name" : os.path.basename(file_path),
                 "sanitized_file_name" : os.path.basename(file_path),
-                "file_url" : file_url,
-                "file_size" : mb_size,
+                "file_url" : url,
+                "file_size" : f"{mb_size:.2f} MB",
                 "md5_hash" : file_hash,
                 "iconverted" : iconverted
             }
@@ -510,7 +519,8 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     sb.execute_script("window.open(arguments[0], '_blank');",file_url)
     sb.sleep(5)
     sb.switch_to_window(sb.driver.window_handles[-1])
-
+    url = sb.get_current_url()
+    print(f"Current URL is {url}")
     if not is_direct_download:
         print("Direct Download link not found")
         print("Form Filling and Captcha handling being done")
