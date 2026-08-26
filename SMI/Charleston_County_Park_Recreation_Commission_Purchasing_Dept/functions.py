@@ -3,7 +3,7 @@ import os
 import re
 import time
 import zipfile
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote
 from datetime import datetime
 import shutil
 import sys
@@ -12,31 +12,44 @@ from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
 
 
+import re
+from datetime import datetime
+
 def regex_date_filter(raw_due_date: str) -> str | None:
-    try:
-        match = re.search(r'([a-zA-Z]+)\s+(\d{1,2})(?:st|nd|rd|th)?,\s*(\d{4})', raw_due_date, re.IGNORECASE)
-
-        if not match:
-            return None
-
-        month, day, year = match.group(1), match.group(2), match.group(3)
-        date_str = f"{month} {day}, {year}"
-
-        try:
-            parsed_date = datetime.strptime(date_str, "%B %d, %Y")
-        except ValueError:
-            try:
-                parsed_date = datetime.strptime(date_str, "%b %d, %Y")
-            except ValueError as e:
-                print(f"Could not parse date: {raw_due_date!r} — {e}")
-                return None
-
-        due_date = f"{parsed_date.month}/{parsed_date.day}/{parsed_date.year}"
-        return due_date
-
-    except Exception as e:
-        print(f"error during parsing the date: {e}")
+    """
+    Extracts a date from text in either of these forms:
+      - '9/09/2026' or '09/9/2026'      (numeric mm/dd/yyyy)
+      - 'September 9, 2026'             (Month dd, yyyy)
+    Returns a normalized 'mm/dd/yyyy' string, or None if nothing matched.
+    """
+    if not raw_due_date:
         return None
+
+    
+    numeric_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', raw_due_date)
+    if numeric_match:
+        try:
+            date_obj = datetime.strptime(numeric_match.group(1), "%m/%d/%Y")
+            return date_obj.strftime("%m/%d/%Y")
+        except ValueError as e:
+            print(f"Matched numeric pattern but failed to parse: {e}")
+
+    
+    text_match = re.search(
+        r'([A-Za-z]+\s+\d{1,2},?\s+\d{4})',
+        raw_due_date
+    )
+    if text_match:
+        raw = text_match.group(1).replace(",", "")
+        for fmt in ("%B %d %Y", "%b %d %Y"):
+            try:
+                date_obj = datetime.strptime(raw, fmt)
+                return date_obj.strftime("%m/%d/%Y")
+            except ValueError:
+                continue
+        print(f"Matched text-date pattern but failed to parse: {raw}")
+
+    return None
 
 
 def santitize_file_name(url:str) -> str:
@@ -100,36 +113,6 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     sb.sleep(5)
     sb.switch_to_window(sb.driver.window_handles[-1])
 
-    ADOBE_VIEWER_DOMAINS = ("acrobat.adobe.com",)
-    parsed = urlsplit(file_url)
-
-    if parsed.netloc in ADOBE_VIEWER_DOMAINS:
-        try:
-            sb.sleep(30)
-            try:
-                sb.wait_for_element_visible("//*[@aria-label='Close']", timeout=5)
-                sb.execute_script("arguments[0].click();", sb.find_element("//*[@aria-label='Close']"))
-            except Exception:
-                pass 
-            sb.wait_for_element_visible("//button[@data-testid='triple-dot-dropdown']", timeout=20)
-            sb.execute_script("arguments[0].click();", sb.find_element("//button[@data-testid='triple-dot-dropdown']"))
-            print("Clicked on the kebab icon")
-            sb.sleep(5)
-            sb.wait_for_element_visible("//span[@class='spectrum-Menu-itemLabel' and normalize-space()='Download this file']", timeout=10)
-            sb.execute_script("arguments[0].click();", sb.find_element("//span[@class='spectrum-Menu-itemLabel' and normalize-space()='Download this file']"))
-            print("Clicked on the download option")
-            sb.sleep(30)
-            sb.wait_for_element_visible('//button[@data-test-id="download-original-button"]', timeout=20)
-            sb.execute_script("arguments[0].click();", sb.find_element('//button[@data-test-id="download-original-button"]'))
-            print("Clicked on the download button to download the file")
-        except Exception as e:
-            print(f"Could not trigger Adobe viewer download: {e}")
-            if len(sb.driver.window_handles) > 1:
-                sb.driver.close()
-            sb.switch_to_window(main_window)
-            return {}
-
-
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
     timeout = 180
@@ -163,8 +146,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
             print(f"Downloading Failed with the following exception: {e}")
 
             try:
-                if len(sb.driver.window_handles) > 1:
-                    sb.driver.close()
+                sb.close()
             except Exception as e:
                 pass
             sb.switch_to_window(main_window)

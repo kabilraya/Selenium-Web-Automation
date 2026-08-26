@@ -60,8 +60,8 @@ def extract_from_json_and_insert(json_path,
                                    iconverted= value["files_info"][str(index)]["iconverted"],
                                    file_size=value["files_info"][str(index)]["file_size"]
                                    )
-                    if not is_bid_duplicate:
-                        total_new_bid_files += 1
+                    
+                    total_new_bid_files += 1
                 if not is_bid_duplicate:
                     total_new_bid += 1
         return{
