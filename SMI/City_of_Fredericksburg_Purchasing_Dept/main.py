@@ -13,7 +13,7 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files, regex_date_filter
+from functions import download_files, regex_date_filter, save_bid_tables_as_pdf,santitize_file_name
 from urllib.parse import urljoin,urlsplit
 from datetime import datetime
 from model.smi_model import SMI
@@ -105,7 +105,13 @@ with SB (
         directed_links = node.xpath("./div[1]/span[1]/a")
         if not directed_links:
             continue
-        
+        bid_details[node_idx] = {
+                            "bid_no": bid_no,
+                            "bid_title": bid_title,          
+                            "bid_due_date": formatted_date,        
+                            "agency_name": module_name,
+                            "files_info": {}
+        }
         # If any one link is found we make a dictionary         
         
         for _,directed_link in enumerate(directed_links):
@@ -119,17 +125,45 @@ with SB (
             page_source = sb.get_page_source()
             sb.sleep(3)
             tree = html.fromstring(page_source)
+
+            notice_filename = f"{bid_no.replace(' ','_').replace('#','')}_bid_notice.pdf"
+            notice_path = os.path.join(download_path, notice_filename)
+            os.makedirs(download_path, exist_ok=True)
+
+            notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
+            info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details']"
+            is_duplicate_hash = False
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
+                session.close()
+            except Exception as e:
+                print(f"Session creation failed {e}")
+
+            if is_duplicate_hash:
+                print("Hash Duplication found for notice PDF")
+            else:
+                save_bid_tables_as_pdf(tree, info_table, notice_path)
+    
+                if os.path.exists(notice_path):
+                    mb_size = os.path.getsize(notice_path) / (1024 * 1024)
+                    new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+                    bid_details[node_idx]["files_info"][new_file_index] = {
+                        "file_name": notice_filename,
+                        "sanitized_file_name": santitize_file_name(notice_filename),
+                        "file_url": directed_url,
+                        "file_size": f"{mb_size:.2f} MB",
+                        "md5_hash": notice_hash,
+                        "iconverted": 0
+                    }
+                else:
+                    print("Notice PDF was not created — no tables matched, skipping dictionary update")
+                
             file_links = tree.xpath("//table[@summary='Bid Details']//tr[contains(normalize-space(),'Related Documents')]/following-sibling::tr//a")
             print(len(file_links))
             if not file_links:
                 continue
-            bid_details[node_idx] = {
-                    "bid_no": bid_no,
-                    "bid_title": bid_title,          
-                    "bid_due_date": formatted_date,        
-                    "agency_name": module_name,
-                    "files_info": {}
-                }
+            
             for file_idx, file in enumerate(file_links, start = 1):
                 file_url = file.get("href","").strip()
                 download_name = file_url.split("/")[-1]
@@ -174,46 +208,46 @@ with SB (
 
         print(f"JSON saved to: {json_path}")
 
-        bid_counts = extract_from_json_and_insert(
-            json_path=json_path,
-            db_url=smi_data_url,
-            region_name=region_name,
-            endpoint_url=endpoint_url,
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key,
-        )
-        end_time = time.perf_counter()
-        total_execution_time = round((end_time - start_time) / 60)
-        total_bids = bid_counts["total_bid"]
-        total_new_bid = bid_counts["total_new_bid"]
-        total_new_bid_file = bid_counts["total_new_bid_file"]
-        print(f"Total bids: {total_bids}")
-        print(f"Total new bids: {total_new_bid}")
-        print(f"Total new bid files: {total_new_bid_file}")
-        print(f"Process took around {total_execution_time}")
+        # bid_counts = extract_from_json_and_insert(
+        #     json_path=json_path,
+        #     db_url=smi_data_url,
+        #     region_name=region_name,
+        #     endpoint_url=endpoint_url,
+        #     aws_access_key_id=aws_access_key_id,
+        #     aws_secret_access_key=aws_secret_access_key,
+        # )
+        # end_time = time.perf_counter()
+        # total_execution_time = round((end_time - start_time) / 60)
+        # total_bids = bid_counts["total_bid"]
+        # total_new_bid = bid_counts["total_new_bid"]
+        # total_new_bid_file = bid_counts["total_new_bid_file"]
+        # print(f"Total bids: {total_bids}")
+        # print(f"Total new bids: {total_new_bid}")
+        # print(f"Total new bid files: {total_new_bid_file}")
+        # print(f"Process took around {total_execution_time}")
 
-        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+        # #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
 
-        session, _ = create_database_session(database_url=smi_record_url)
-        insert_into_record_db(
-            session = session,
-            ecgain=ecgains,
-            module_name=module_name.split(".")[0],
-            total_bid= total_bids,
-            total_new_bid=total_new_bid,
-            total_new_bid_files=total_new_bid_file,
-            timeelapsed=total_execution_time
-        )
+        # session, _ = create_database_session(database_url=smi_record_url)
+        # insert_into_record_db(
+        #     session = session,
+        #     ecgain=ecgains,
+        #     module_name=module_name.split(".")[0],
+        #     total_bid= total_bids,
+        #     total_new_bid=total_new_bid,
+        #     total_new_bid_files=total_new_bid_file,
+        #     timeelapsed=total_execution_time
+        # )
 
-        update_value(
-                    db_url=smi_record_url,
-                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
-                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                    )
-        delete_files_in_directory(download_path)
+        # update_value(
+        #             db_url=smi_record_url,
+        #             query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+        #             new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
+        #             condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+        #             )
+        # delete_files_in_directory(download_path)
     
-        print("Scraping Successful")
+        # print("Scraping Successful")
 
     
 

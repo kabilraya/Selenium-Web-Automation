@@ -10,7 +10,84 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from urllib.parse import urljoin
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
+
+def save_bid_tables_as_pdf(tree, xpath: str, output_path: str) -> None:
+    styles = getSampleStyleSheet()
+    body_style = styles["Normal"]
+    bid_tables = tree.xpath(xpath)
+    if not bid_tables:
+        print("No tables found for the given xpath — nothing to save")
+        return
+    story = []
+    for table_idx, table in enumerate(bid_tables):
+        rows_data = []
+        for tr in table.xpath(".//tr"):
+            cells = tr.xpath("./td")
+            if not cells:
+                continue
+
+            cell_texts = []
+            for td in cells:
+                links = td.xpath(".//a")
+                if links:
+                    link_parts = []
+                    for link in links:
+                        href = link.get("href", "").strip()
+                        href = urljoin("https://www.fredericksburgva.gov/", href)
+                        link_text = link.text_content().strip()
+                        if href:
+                            link_parts.append(f'<link href="{href}" color="blue"><u>{link_text}</u></link>')
+                        else:
+                            link_parts.append(link_text)
+                    cell_texts.append("<br/>".join(link_parts))
+                else:
+                    cell_texts.append(td.text_content().strip())
+
+            if not any(cell_texts):
+                continue
+            row = [Paragraph(text.replace("\n", "<br/>"), body_style) for text in cell_texts]
+            rows_data.append(row)
+        if not rows_data:
+            continue
+        max_cols = max(len(r) for r in rows_data)
+        for r in rows_data:
+            while len(r) < max_cols:
+                r.append(Paragraph("", body_style))
+        if max_cols >= 2:
+            col_widths = [150] + [370] * (max_cols - 1)
+        else:
+            col_widths = None
+        pdf_table = Table(rows_data, colWidths=col_widths)
+        pdf_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(pdf_table)
+        if table_idx < len(bid_tables) - 1:
+            story.append(Spacer(1, 20))
+    if not story:
+        print("No rows extracted — nothing to save")
+        return
+    doc = SimpleDocTemplate(
+        output_path,
+        pagesize=letter,
+        leftMargin=40,
+        rightMargin=40,
+        topMargin=40,
+        bottomMargin=40,
+    )
+    doc.build(story)
 
 def regex_date_filter(raw_due_date: str) -> str | None:
     try:

@@ -136,6 +136,11 @@ with SB (
             
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
             file_url = urljoin("https://www.cameroncountytx.gov/",file_url)
+            ADOBE_VIEWER_DOMAINS = ("acrobat.adobe.com",)
+            parsed = urlsplit(file_url)
+            if parsed.netloc in ADOBE_VIEWER_DOMAINS:
+                print("Found the Adobe Link... Changing the URL")
+                file_url = "https://cdn-sharing.adobecc.com/content/storage/id/urn:aaid:sc:US:26b29f93-fe7a-47a4-ab0f-db14a660b422?access_token=1787751849_urn%3Aaaid%3Asc%3AUS%3A26b29f93-fe7a-47a4-ab0f-db14a660b422%3Bpublic_4a09826658240fe9a9428e3ac807cad3899a077b&api_key=dc_sendtrack&utm_source=chatgpt.com"
             file = download_files(sb = sb,
                                   file_url=file_url,
                                   script_directory=script_directory,
