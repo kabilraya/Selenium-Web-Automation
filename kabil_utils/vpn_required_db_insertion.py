@@ -111,8 +111,8 @@ def extract_from_json_and_add_to_db(
                                    file_size=value["files_info"][str(index)]["file_size"]
                                     )
                     
-                    if not is_bid_duplicate:
-                        total_new_bid_file += 1
+                    
+                    total_new_bid_file += 1
 
                 if not is_bid_duplicate:
                     total_new_bid += 1

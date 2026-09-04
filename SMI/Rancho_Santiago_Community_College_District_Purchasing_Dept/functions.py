@@ -10,131 +10,90 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from urllib.parse import urljoin
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+import requests
+from seleniumbase import SB
+from selenium.webdriver.support.ui import Select
 
 
-def extract_parts(node, parts):
-    """Recursively walk a node's children in document order, building markup parts."""
-    if node.text and node.text.strip():
-        parts.append(node.text.strip())
-
-    for child in node.iterchildren():
-        if child.tag in ("script", "style"):
-            if child.tail and child.tail.strip():
-                parts.append(child.tail.strip())
-            continue
-
-        if child.tag == "a":
-            href = child.get("href", "").strip()
-            href = urljoin("https://www.prcity.com/", href) if href else ""
-            if href:
-                parts.append(f'<link href="{href}" color="blue"><u>{href}</u></link>')
-            else:
-                link_text = "".join(
-                    child.xpath(".//text()[not(ancestor::script) and not(ancestor::style)]")
-                ).strip()
-                link_text = re.sub(
-                    r"For security reasons,?\s*you must enable JavaScript to view this E-?mail address\.?",
-                    "",
-                    link_text,
-                    flags=re.IGNORECASE
-                ).strip()
-                if link_text:
-                    parts.append(link_text)
-        else:
-            # recurse into this child in case it wraps an <a> deeper inside (e.g. <p><a>...</a></p>)
-            extract_parts(child, parts)
-
-        if child.tail and child.tail.strip():
-            parts.append(child.tail.strip())
-
-
-def save_bid_tables_as_pdf(tree, xpath: str, output_path: str) -> None:
-    styles = getSampleStyleSheet()
-    body_style = styles["Normal"]
-    bid_tables = tree.xpath(xpath)
-    if not bid_tables:
-        print("No tables found for the given xpath — nothing to save")
-        return
-
-    story = []
-    for table_idx, table in enumerate(bid_tables):
-        rows_data = []
-        for tr in table.xpath(".//tr"):
-            cells = tr.xpath("./td")
-            if not cells:
-                continue
-
-            cell_texts = []
-            for td in cells:
-                parts = []
-                extract_parts(td, parts)
-                cell_texts.append(" ".join(p for p in parts if p))
-
-            if not any(cell_texts):
-                continue
-
-            row = [Paragraph(text.replace("\n", "<br/>"), body_style) for text in cell_texts]
-            rows_data.append(row)
-
-        if not rows_data:
-            continue
-
-        max_cols = max(len(r) for r in rows_data)
-        for r in rows_data:
-            while len(r) < max_cols:
-                r.append(Paragraph("", body_style))
-
-        col_widths = [150] + [370] * (max_cols - 1) if max_cols >= 2 else None
-
-        pdf_table = Table(rows_data, colWidths=col_widths)
-        pdf_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ]))
-
-        story.append(pdf_table)
-        if table_idx < len(bid_tables) - 1:
-            story.append(Spacer(1, 20))
-
-    if not story:
-        print("No rows extracted — nothing to save")
-        return
-
-    doc = SimpleDocTemplate(
-        output_path,
-        pagesize=letter,
-        leftMargin=40,
-        rightMargin=40,
-        topMargin=40,
-        bottomMargin=40,
+def form_filling(sb:SB):
+    sb.type("//label[contains(normalize-space(),'Name')]/following-sibling::input","John Doe")
+    sb.type("//label[contains(normalize-space(),'Company')]/following-sibling::input","Prime Vendor")
+    sb.type("//label[contains(normalize-space(),'Address')]/following-sibling::input","NY")
+    sb.type("//label[contains(normalize-space(),'City/Town')]/following-sibling::input","NY")
+    sb.type("//label[contains(normalize-space(),'ZIP/Postal Code')]/following-sibling::input","45645")
+    sb.type("//label[contains(normalize-space(),'Country')]/following-sibling::input","US")
+    sb.type("//label[contains(normalize-space(),'Email Address')]/following-sibling::input","johndoe@gmail.com")
+    sb.type("//label[contains(normalize-space(),'Phone Number')]/following-sibling::input","2026754")
+    select_element = sb.get_element(
+    "//label[contains(normalize-space(),'State/Province')]/following::select",
+    by="xpath"
     )
-    doc.build(story)
+    Select(select_element).select_by_visible_text("NJ New Jersey")
+    sb.hover_and_click(hover_selector="//button[normalize-space()='Next']",click_selector="//button[normalize-space()='Next']")
+    sb.sleep(5)
+
+
+def is_direct_download(url, session=None):
+    req = session or requests
+    try:
+        resp = req.head(url, allow_redirects=True, timeout=10)
+
+        # some servers don't implement HEAD properly — fall back to GET
+        if resp.status_code >= 400 or not resp.headers.get('Content-Type'):
+            resp = req.get(url, stream=True, timeout=10)
+            resp.close()
+
+        content_type = resp.headers.get('Content-Type', '').lower()
+        content_disposition = resp.headers.get('Content-Disposition', '').lower()
+
+        if 'attachment' in content_disposition:
+            return True   
+        if content_type and 'text/html' not in content_type:
+            return True   
+
+        return False  
+
+    except requests.RequestException:
+        return False
+
+import re
+from datetime import datetime
 
 def regex_date_filter(raw_due_date: str) -> str | None:
-    try:
-        match = re.search(
-            r'(\d{1,2}/\d{1,2}/\d{4})',
-            raw_due_date
-        )
-
-        if match:
-            return match.group(1)
-
+    """
+    Extracts a date from text in either of these forms:
+      - '9/09/2026' or '09/9/2026'      (numeric mm/dd/yyyy)
+      - 'September 9, 2026'             (Month dd, yyyy)
+    Returns a normalized 'mm/dd/yyyy' string, or None if nothing matched.
+    """
+    if not raw_due_date:
         return None
 
-    except Exception as e:
-        print(f"Error during parsing the date: {e}")
-        return None
+    
+    numeric_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', raw_due_date)
+    if numeric_match:
+        try:
+            date_obj = datetime.strptime(numeric_match.group(1), "%m/%d/%Y")
+            return date_obj.strftime("%m/%d/%Y")
+        except ValueError as e:
+            print(f"Matched numeric pattern but failed to parse: {e}")
+
+    
+    text_match = re.search(
+        r'([A-Za-z]+\s+\d{1,2},?\s+\d{4})',
+        raw_due_date
+    )
+    if text_match:
+        raw = text_match.group(1).replace(",", "")
+        for fmt in ("%B %d %Y", "%b %d %Y"):
+            try:
+                date_obj = datetime.strptime(raw, fmt)
+                return date_obj.strftime("%m/%d/%Y")
+            except ValueError:
+                continue
+        print(f"Matched text-date pattern but failed to parse: {raw}")
+
+    return None
 
 
 def santitize_file_name(url:str) -> str:
@@ -143,7 +102,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
+def download_files(sb:SB, file_url, script_directory,download_path,file_index, file_hash):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -195,9 +154,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     os.makedirs(downloaded_files_dir, exist_ok=True)
     before_files = set(os.listdir(downloaded_files_dir))
     sb.execute_script("window.open(arguments[0], '_blank');",file_url)
-    sb.sleep(5)
     sb.switch_to_window(sb.driver.window_handles[-1])
-
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
     timeout = 180
@@ -223,19 +180,6 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
         time.sleep(poll_interval)
 
-    if actual_file_name is None:
-        print("Downloading failed")
-        try:
-            sb.assert_downloaded_file(actual_file_name,timeout=120, browser = False)
-        except Exception as e:
-            print(f"Downloading Failed with the following exception: {e}")
-
-            try:
-                sb.close()
-            except Exception as e:
-                pass
-            sb.switch_to_window(main_window)
-            return {}
 
     print(actual_file_name)
 

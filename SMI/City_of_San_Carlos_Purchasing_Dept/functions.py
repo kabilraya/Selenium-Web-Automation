@@ -10,131 +10,175 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+import re
+from lxml import etree
+from markdownify import markdownify as md
 from urllib.parse import urljoin
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+import markdown as md_lib
+from weasyprint import HTML, CSS
+import requests
 
 
-def extract_parts(node, parts):
-    """Recursively walk a node's children in document order, building markup parts."""
-    if node.text and node.text.strip():
-        parts.append(node.text.strip())
 
-    for child in node.iterchildren():
-        if child.tag in ("script", "style"):
-            if child.tail and child.tail.strip():
-                parts.append(child.tail.strip())
-            continue
+def strip_empty_elements(node):
+    """Remove elements that contain no visible text/content, working bottom-up
+    so a parent that becomes empty after its empty children are removed
+    also gets removed."""
+    EMPTY_CANDIDATE_TAGS = {"p", "ol", "ul", "div", "span"}
 
-        if child.tag == "a":
-            href = child.get("href", "").strip()
-            href = urljoin("https://www.prcity.com/", href) if href else ""
-            if href:
-                parts.append(f'<link href="{href}" color="blue"><u>{href}</u></link>')
-            else:
-                link_text = "".join(
-                    child.xpath(".//text()[not(ancestor::script) and not(ancestor::style)]")
-                ).strip()
-                link_text = re.sub(
-                    r"For security reasons,?\s*you must enable JavaScript to view this E-?mail address\.?",
-                    "",
-                    link_text,
-                    flags=re.IGNORECASE
-                ).strip()
-                if link_text:
-                    parts.append(link_text)
-        else:
-            # recurse into this child in case it wraps an <a> deeper inside (e.g. <p><a>...</a></p>)
-            extract_parts(child, parts)
+    for child in list(node):
+        strip_empty_elements(child)
 
-        if child.tail and child.tail.strip():
-            parts.append(child.tail.strip())
+    if node.tag in EMPTY_CANDIDATE_TAGS:
+        has_text = (node.text and node.text.strip()) or any(
+            (child.tail and child.tail.strip()) for child in node
+        )
+        has_meaningful_children = len(node) > 0 
+        if not has_text and not has_meaningful_children:
+            parent = node.getparent()
+            if parent is not None:
+                if node.tail and node.tail.strip():
+                    prev = node.getprevious()
+                    if prev is not None:
+                        prev.tail = (prev.tail or "") + node.tail
+                    else:
+                        parent.text = (parent.text or "") + node.tail
+                parent.remove(node)
 
 
-def save_bid_tables_as_pdf(tree, xpath: str, output_path: str) -> None:
-    styles = getSampleStyleSheet()
-    body_style = styles["Normal"]
-    bid_tables = tree.xpath(xpath)
-    if not bid_tables:
-        print("No tables found for the given xpath — nothing to save")
+def remove_excluded_elements(node, exclude_xpaths):
+    """Remove elements matching any of the given XPath expressions
+    (relative to `node`) before converting to Markdown."""
+    if not exclude_xpaths:
+        return
+    for xpath in exclude_xpaths:
+        for match in node.xpath(xpath):
+            parent = match.getparent()
+            if parent is not None:
+                parent.remove(match)
+
+
+def node_to_markdown(node, base_url: str = "", exclude_xpaths=None) -> str:
+    remove_excluded_elements(node, exclude_xpaths)
+
+    # Ensure adjacent <a> tags never get glued together with no separator
+    anchors = node.xpath(".//a[@href]")
+    for a in anchors:
+        nxt = a.getnext()
+        # if the very next sibling element is also an <a>, and there's no
+        # whitespace tail between them, force a line break
+        if nxt is not None and nxt.tag == "a" and not (a.tail and a.tail.strip()):
+            a.tail = (a.tail or "") + "\n\n"
+
+    for a in anchors:
+        href = a.get("href", "").strip()
+        if href and base_url:
+            a.set("href", urljoin(base_url, href))
+
+    for img in node.xpath(".//img[@src]"):
+        src = img.get("src", "").strip()
+        if src and base_url:
+            img.set("src", urljoin(base_url, src))
+        if not img.get("alt"):
+            img.set("alt", "image")
+
+    strip_empty_elements(node)
+
+    inner_html = etree.tostring(node, encoding="unicode", method="html")
+    text = md(inner_html, heading_style="ATX", bullets="-", strip=["script", "style"])
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+def save_nodes_as_pdf(tree, xpath: str, output_path: str, base_url: str = "",exclude_xpaths = None) -> None:
+    nodes = tree.xpath(xpath)
+    if not nodes:
+        print("No nodes found — nothing to save")
         return
 
-    story = []
-    for table_idx, table in enumerate(bid_tables):
-        rows_data = []
-        for tr in table.xpath(".//tr"):
-            cells = tr.xpath("./td")
-            if not cells:
-                continue
+    md_chunks = []
+    for idx, node in enumerate(nodes):
+        md_chunks.append(node_to_markdown(node, base_url=base_url, exclude_xpaths=exclude_xpaths))
+        if idx < len(nodes) - 1:
+            md_chunks.append("\n\n---\n\n")   
 
-            cell_texts = []
-            for td in cells:
-                parts = []
-                extract_parts(td, parts)
-                cell_texts.append(" ".join(p for p in parts if p))
+    full_markdown = "\n\n".join(md_chunks)
 
-            if not any(cell_texts):
-                continue
+    
+    with open(output_path.replace(".pdf", ".md"), "w", encoding="utf-8") as f:
+        f.write(full_markdown)
 
-            row = [Paragraph(text.replace("\n", "<br/>"), body_style) for text in cell_texts]
-            rows_data.append(row)
+    html_body = md_lib.markdown(full_markdown, extensions=["extra", "sane_lists"])
 
-        if not rows_data:
-            continue
+    css = CSS(string="""
+    @page { size: letter; margin: 40px; }
+    body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; line-height: 1.4; }
+    hr { border: none; border-top: 1px solid #999; margin: 12px 0; }
+    p { margin: 0 0 10px 0; }
+    ol, ul { margin: 4px 0 10px 1.2em; padding: 0; }
+    a { color: blue; text-decoration: underline; }
+    p:empty, ol:empty, ul:empty, div:empty { margin: 0; padding: 0; display: none; }
+""")
 
-        max_cols = max(len(r) for r in rows_data)
-        for r in rows_data:
-            while len(r) < max_cols:
-                r.append(Paragraph("", body_style))
-
-        col_widths = [150] + [370] * (max_cols - 1) if max_cols >= 2 else None
-
-        pdf_table = Table(rows_data, colWidths=col_widths)
-        pdf_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ]))
-
-        story.append(pdf_table)
-        if table_idx < len(bid_tables) - 1:
-            story.append(Spacer(1, 20))
-
-    if not story:
-        print("No rows extracted — nothing to save")
-        return
-
-    doc = SimpleDocTemplate(
-        output_path,
-        pagesize=letter,
-        leftMargin=40,
-        rightMargin=40,
-        topMargin=40,
-        bottomMargin=40,
+    HTML(string=f"<html><body>{html_body}</body></html>").write_pdf(
+        output_path, stylesheets=[css]
     )
-    doc.build(story)
+
+def is_downloadable_file(url):
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=10)
+        content_type = resp.headers.get('Content-Type', '').lower()
+        content_disposition = resp.headers.get('Content-Disposition', '')
+
+        # 1. Content-Type not text/html → it's a file
+        if content_type and 'text/html' not in content_type:
+            return True
+
+        # 2. Content-Disposition: attachment is a strong signal even if
+        #    Content-Type is generic (some servers send octet-stream or
+        #    even text/html headers incorrectly)
+        if 'attachment' in content_disposition.lower():
+            return True
+
+        return False
+    except requests.RequestException:
+        return False
 
 def regex_date_filter(raw_due_date: str) -> str | None:
-    try:
-        match = re.search(
-            r'(\d{1,2}/\d{1,2}/\d{4})',
-            raw_due_date
-        )
-
-        if match:
-            return match.group(1)
-
+    """
+    Extracts a date from text in either of these forms:
+      - '9/09/2026' or '09/9/2026'      (numeric mm/dd/yyyy)
+      - 'September 9, 2026'             (Month dd, yyyy)
+    Returns a normalized 'mm/dd/yyyy' string, or None if nothing matched.
+    """
+    if not raw_due_date:
         return None
 
-    except Exception as e:
-        print(f"Error during parsing the date: {e}")
-        return None
+    
+    numeric_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', raw_due_date)
+    if numeric_match:
+        try:
+            date_obj = datetime.strptime(numeric_match.group(1), "%m/%d/%Y")
+            return date_obj.strftime("%m/%d/%Y")
+        except ValueError as e:
+            print(f"Matched numeric pattern but failed to parse: {e}")
+
+    
+    text_match = re.search(
+        r'([A-Za-z]+\s+\d{1,2},?\s+\d{4})',
+        raw_due_date
+    )
+    if text_match:
+        raw = text_match.group(1).replace(",", "")
+        for fmt in ("%B %d %Y", "%b %d %Y"):
+            try:
+                date_obj = datetime.strptime(raw, fmt)
+                return date_obj.strftime("%m/%d/%Y")
+            except ValueError:
+                continue
+        print(f"Matched text-date pattern but failed to parse: {raw}")
+
+    return None
 
 
 def santitize_file_name(url:str) -> str:

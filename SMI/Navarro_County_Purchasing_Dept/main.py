@@ -21,7 +21,7 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+import re
 #make all the path 
 start_time = time.perf_counter()
 
@@ -57,16 +57,18 @@ with SB (
     external_pdf = True,
     locale = "en",
 ) as sb:
-    sb.uc_open_with_reconnect(main_url)
-    
+    sb.uc_open_with_reconnect(main_url, reconnect_time=6)
+
     sb.uc_gui_click_captcha()
-    sb.sleep(3)
+    sb.sleep(5)
     sb.switch_to_default_content()
-    sb.wait_for_element("//div[contains(@class,'accordion-item')]", by="xpath", timeout=15)
+    sb.sleep(3)
     page_source = sb.get_page_source()
-    time.sleep(5)
+    
     tree = html.fromstring(page_source)
-    all_bids = tree.xpath("//div[@class='container'][./h2[normalize-space()='Browse our recent RFPs / RFQs']]//div[@class='accordion-item']")
+    sb.sleep(3)
+    
+    bid_nodes = tree.xpath("//div[@class='eztext_area'][contains(normalize-space(),'Open Bid Requests')]/p[./a][not(contains(normalize-space(),'approved bid will be posted soon'))]/a")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -76,72 +78,60 @@ with SB (
     "download_path" : download_path,
     "server_path" : server_path
     }
-    print(len(all_bids))
-    for node_idx, node in enumerate(all_bids,start=1):
-        bid_title = node.xpath("./h3")[0].text_content().strip()
-        bid_no = bid_title[:25]
-        bid_due_date = node.xpath(".//h5")[0].text_content().strip()
-        bid_due_date = bid_due_date.split(":",1)[-1].strip()
-        print(bid_due_date)
-        formatted_date = regex_date_filter(bid_due_date)
-        date_obj = None
-        if formatted_date:
-            try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
-            except ValueError as e:
-                try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
-                except ValueError as e:
-                    print(f"Cannot Parse the date.. Failed due to: {e}")
-                    continue
+    BID_NO_PATTERN = re.compile(
+    r'^(?:RFQ/RFP|RFQ|RFP|Bid)\s+\d[\w-]*',
+    re.IGNORECASE
+    )
+    for node_idx, node in enumerate(bid_nodes,start=1):        
+        bid_title = node.xpath("./text()")[0].strip()
+        bid_no = BID_NO_PATTERN.match(bid_title)
+        bid_no = bid_no.group(0)
+        
+        
+        
+        formatted_date = "Not Specified"
 
-        if date_obj and date_obj < datetime.today().date():
-            
+        print(formatted_date)
+        print(f"Bid Title: {bid_title}\nBid No.:{bid_no}")
+        
+    
+        bid_details[node_idx] = {
+                "bid_no": bid_no,
+                "bid_title": bid_title,          
+                "bid_due_date": formatted_date,        
+                "agency_name": module_name,
+                "files_info": {}
+            }
+        
+        file_url = node.get("href","").strip()
+        if not file_url:
+            print("href was not found.. skipping")
             continue
-
-        print(f"Due Date: {formatted_date}")
-        print(f"Bid Title: {bid_title} \nBid No.: {bid_no}")
-        file_links = node.xpath(".//a[contains(@class,'button')]")
-        if not file_links:
+        download_name = file_url.split("/")[-1]
+        print(download_name)
+        file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+        # create a session of database to check for duplication of hash and kill the session immediately
+        try:
+            session, _ = create_database_session(database_url=smi_data_url)
+            is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+            session.close()
+            if is_duplicate_hash:
+                print("Hash Duplication found")
+                continue
+        except Exception as e:
+            print(f"Session creation failed {e}")
             continue
         
-        # If any one link is found we make a dictionary         
-        bid_details[node_idx] = {
-        "bid_no": bid_no,
-        "bid_title": bid_title,          
-        "bid_due_date": formatted_date,        
-        "agency_name": module_name,
-        "files_info": {}
-    }
-    
-        for file_idx, file in enumerate(file_links, start = 1):
-            file_url = file.get("href","").strip()
-            download_name = file_url.split("/")[-1].strip()
-            
-            print(download_name)
-            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
-            # create a session of database to check for duplication of hash and kill the session immediately
-            try:
-                session, _ = create_database_session(database_url=smi_data_url)
-                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
-                session.close()
-                if is_duplicate_hash:
-                    print("Hash Duplication found")
-                    continue
-            except Exception as e:
-                print(f"Session creation failed {e}")
-                continue
-            
-            new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://www.mwdoc.com/",file_url)
-            
-            file = download_files(sb = sb,
-                                  file_url=file_url,
-                                  script_directory=script_directory,
-                                  download_path=download_path,
-                                  file_index=new_file_index,
-                                  file_hash=file_hash)
-            bid_details[node_idx]["files_info"].update(file)
+        new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+        file_url = urljoin("https://www.co.navarro.tx.us/",file_url)
+        file_url = quote(file_url,safe = ":/?=&%")
+        file = download_files(sb = sb,
+                              file_url=file_url,
+                              script_directory=script_directory,
+                              download_path=download_path,
+                              file_index=new_file_index,
+                              file_hash=file_hash)
+        bid_details[node_idx]["files_info"].update(file)
 
     has_downloads = any(
         bid["files_info"]
@@ -192,13 +182,14 @@ with SB (
         )
 
         update_value(
-                db_url=smi_record_url,
-                query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-                new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
-                condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                )
+        db_url=smi_record_url, 
+        query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
+        "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
+        new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
+        condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+        )
         delete_files_in_directory(download_path)
-
+    
         print("Scraping Successful")
 
     

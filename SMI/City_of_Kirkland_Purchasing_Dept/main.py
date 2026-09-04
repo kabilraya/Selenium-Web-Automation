@@ -9,6 +9,7 @@ from lxml import html
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..","..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import time
+import re
 from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
@@ -21,7 +22,8 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+import copy
+from lxml import etree
 #make all the path 
 start_time = time.perf_counter()
 
@@ -56,18 +58,15 @@ with SB (
     disable_features = "ChromePDFViewer",
     external_pdf = True,
     locale = "en",
-    log_cdp = True, 
 ) as sb:
     sb.uc_open_with_reconnect(main_url)
     
     sb.uc_gui_click_captcha()
-    sb.sleep(3)
+    sb.sleep(5)
     page_source = sb.get_page_source()
     time.sleep(5)
     tree = html.fromstring(page_source)
-    all_bids = tree.xpath("(//div[contains(@class,'gem-table') and contains(@class,'gem-table-responsive')])[1]//tbody/tr")
-
-    #Creating a top level directory which consists the top level infomation common for all the bids in one websites
+   
     bid_details = {
     "ecgains": ecgains,
     "module_name": module_name,
@@ -76,38 +75,84 @@ with SB (
     "server_path" : server_path
     }
 
-    for node_idx, node in enumerate(all_bids,start=1):
-    
-        bid_title = node.xpath("./td[2]//a")[0].text_content().strip()
-        bid_no = node.xpath("./td[1]")[0].text_content().strip()
-        date_td = node.xpath("./td[4]")[0]
-        p_tag = date_td.xpath("./p")
+    p_elements = tree.xpath("//div[contains(@class,'oc-wysiwyg-container-panel-content')]//p")
 
-        if p_tag:
-            bid_due_date = p_tag[0].text_content().strip()
-        else:
-            bid_due_date = date_td.text_content().strip()
-            
-        formatted_date = regex_date_filter(bid_due_date)
-        
+    bid_fragments = []
+    current_nodes = None
+
+    for p in p_elements:
+        for node in p.xpath("node()"):
+            is_marker = False
+            if not isinstance(node, str) and node.tag == "strong":
+                marker_text = node.text_content().replace("\xa0", " ").strip().rstrip(":").strip().lower()
+                is_marker = marker_text == "project name"
+
+            if is_marker:
+                current_nodes = []
+                bid_fragments.append(current_nodes)
+
+            if current_nodes is not None:
+                current_nodes.append(node)
+
+    # rebuild each flat node-list into a standalone <div> so it can be
+    # queried with .text_content() / .xpath() like any normal element
+    bid_elements = []
+    for nodes in bid_fragments:
+        frag = html.Element("div")
+        last_el = None
+        for node in nodes:
+            if isinstance(node, str):
+                if last_el is None:
+                    frag.text = (frag.text or "") + node
+                else:
+                    last_el.tail = (last_el.tail or "") + node
+            else:
+                new_el = copy.deepcopy(node)
+                new_el.tail = None   # tail gets set explicitly by the next node() item in this loop
+                frag.append(new_el)
+                last_el = new_el
+        bid_elements.append(frag)
+
+    for node_idx, node in enumerate(bid_elements, start=1):
+        full_text = node.text_content()
+        links = node.xpath(".//a[@href]")
+
+        title_match = re.search(r'Project Name:\s*(.+?)(?:\(PDF|Job Number:|Issue Date:|Bids Due:|$)', full_text, re.S)
+        bid_title = title_match.group(1).strip() if title_match else None
+        if bid_title:
+            # strip any leftover "(PDF, 57KB)" style annotation and trailing punctuation/whitespace
+            bid_title = re.sub(r'\(PDF[^)]*\)', '', bid_title).strip().rstrip(',').strip()
+
+        job_no_match = re.search(r'Job Number:\s*(.+?)(?:Issue Date:|Bids Due:|RFQ Document:|Plans:|Specifications:|$)', full_text, re.S)
+        bid_no = job_no_match.group(1).strip() if job_no_match else None
+
+        due_match = re.search(r'Bids Due:\s*(.+?)(?:RFQ Document:|Plans:|Specifications:|$)', full_text, re.S)
+        bid_due_raw = due_match.group(1).strip() if due_match else None
+        formatted_date = regex_date_filter(bid_due_raw) if bid_due_raw else None
         date_obj = None
         if formatted_date:
             try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
             except ValueError as e:
                 try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
                 except ValueError as e:
-                    print(f"Cannot Parse the date.. Failed due to: {e}")
+                    print("Couldn't parse the date")
                     continue
+        if date_obj and date_obj <= datetime.today().date():
+            continue
+        elif date_obj == None:
+            continue
+        file_urls = [
+            urljoin(main_url, a.get("href", "").strip())
+            for a in links
+            if a.get("href", "").strip() and not a.get("href", "").strip().startswith(("mailto:", "tel:"))
+        ]
 
-        if date_obj and date_obj < datetime.today().date():
+        print(f"Bid Title: {bid_title}\nBid Due Date: {formatted_date}\nFiles: {len(file_urls)}")
+        if not file_urls:
             continue
-        print(f"Due Date: {formatted_date}")
-        print(f"Bid Title: {bid_title} \nBid No.: {bid_no}")
-        file_links = node.xpath(".//a")
-        if not file_links:
-            continue
+    
         
         # If any one link is found we make a dictionary         
         bid_details[node_idx] = {
@@ -117,10 +162,10 @@ with SB (
         "agency_name": module_name,
         "files_info": {}
     }
-    
-        for file_idx, file in enumerate(file_links, start = 1):
-            file_url = file.get("href","").strip()
-            download_name = file_url.split("/")[-1].strip()
+
+        for file_idx, file_url in enumerate(file_urls, start = 1):
+           
+            download_name = file_url.split("/")[-1]
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
             # create a session of database to check for duplication of hash and kill the session immediately
@@ -136,12 +181,7 @@ with SB (
                 continue
             
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://www.cameroncountytx.gov/",file_url)
-            # ADOBE_VIEWER_DOMAINS = ("acrobat.adobe.com",)
-            # parsed = urlsplit(file_url)
-            # if parsed.netloc in ADOBE_VIEWER_DOMAINS:
-            #     print("Found the Adobe Link... Changing the URL")
-            #     file_url = "https://cdn-sharing.adobecc.com/content/storage/id/urn:aaid:sc:US:26b29f93-fe7a-47a4-ab0f-db14a660b422?access_token=1787751849_urn%3Aaaid%3Asc%3AUS%3A26b29f93-fe7a-47a4-ab0f-db14a660b422%3Bpublic_4a09826658240fe9a9428e3ac807cad3899a077b&api_key=dc_sendtrack&utm_source=chatgpt.com"
+            file_url = urljoin("https://www.kirklandwa.gov/",file_url)
             file = download_files(sb = sb,
                                   file_url=file_url,
                                   script_directory=script_directory,
@@ -199,14 +239,13 @@ with SB (
         )
 
         update_value(
-                db_url=smi_record_url, 
-                query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
-                "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
-                new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
-                condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                )
+                    db_url=smi_record_url,
+                    query="UPDATE tbl_smirecord SET baseURL = :baseURL_value, brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value" : main_url},
+                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                    )
         delete_files_in_directory(download_path)
-
+    
         print("Scraping Successful")
 
     

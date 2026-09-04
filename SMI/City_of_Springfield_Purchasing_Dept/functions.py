@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
-
+import requests
 
 def extract_parts(node, parts):
     """Recursively walk a node's children in document order, building markup parts."""
@@ -32,7 +32,7 @@ def extract_parts(node, parts):
 
         if child.tag == "a":
             href = child.get("href", "").strip()
-            href = urljoin("https://www.prcity.com/", href) if href else ""
+            href = urljoin("https://www.springfieldmo.gov/", href) if href else ""
             if href:
                 parts.append(f'<link href="{href}" color="blue"><u>{href}</u></link>')
             else:
@@ -119,6 +119,35 @@ def save_bid_tables_as_pdf(tree, xpath: str, output_path: str) -> None:
         bottomMargin=40,
     )
     doc.build(story)
+
+def is_downloadable_file(url):
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=10)
+        content_type = resp.headers.get('Content-Type', '').lower()
+        content_disposition = resp.headers.get('Content-Disposition', '').lower()
+
+        if resp.status_code >= 400 or not content_type:
+            resp = requests.get(url, stream=True, timeout=10)
+            content_type = resp.headers.get('Content-Type', '').lower()
+            content_disposition = resp.headers.get('Content-Disposition', '').lower()
+            resp.close()
+
+        # Only inspect the disposition TYPE (the part before the first ';'),
+        # never the whole header — the filename can legitimately contain
+        # the word "attachment" (e.g. "Attachment 5-Davis-Bacon-WD.txt"),
+        # which would otherwise false-positive a substring check.
+        disposition_type = content_disposition.split(';')[0].strip()
+        if disposition_type == 'attachment':
+            return True
+
+        INLINE_RENDERABLE = ('text/plain', 'text/html', 'image/', 'text/xml')
+        if any(content_type.startswith(t) for t in INLINE_RENDERABLE):
+            return False
+
+        return True
+
+    except requests.RequestException:
+        return False
 
 def regex_date_filter(raw_due_date: str) -> str | None:
     try:

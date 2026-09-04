@@ -10,115 +10,137 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
 from urllib.parse import urljoin
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from lxml import etree
+from markdownify import markdownify as md
+from urllib.parse import urljoin
+import markdown as md_lib
+from weasyprint import HTML, CSS
+
+DEFAULT_EXCLUDE_XPATHS = [
+    ".//script",
+    ".//noscript",
+    ".//style",
+    ".//iframe",
+    ".//link",
+    ".//meta",
+    ".//svg",
+    ".//button",
+    ".//input",
+    ".//form",
+    ".//comment()",
+    # hidden-via-CSS elements — common in CMS markup for tooltips, modals, etc.
+    ".//*[contains(translate(@style,'DISPLAY','display'),'display:none')]",
+    ".//*[contains(translate(@style,'DISPLAY','display'),'display: none')]",
+    ".//*[@hidden]",
+    ".//*[@aria-hidden='true']",
+]
 
 
-def extract_parts(node, parts):
-    """Recursively walk a node's children in document order, building markup parts."""
-    if node.text and node.text.strip():
-        parts.append(node.text.strip())
+def remove_excluded_elements(node, exclude_xpaths):
+    """Remove elements matching any of the given XPath expressions
+    (relative to `node`) before converting to Markdown/HTML."""
+    xpaths = DEFAULT_EXCLUDE_XPATHS + list(exclude_xpaths or [])
+    for xpath in xpaths:
+        for match in node.xpath(xpath):
+            parent = match.getparent()
+            if parent is not None:
+                parent.remove(match)
 
-    for child in node.iterchildren():
-        if child.tag in ("script", "style"):
-            if child.tail and child.tail.strip():
-                parts.append(child.tail.strip())
-            continue
+def strip_empty_elements(node):
+    """Remove elements that contain no visible text/content, working bottom-up
+    so a parent that becomes empty after its empty children are removed
+    also gets removed."""
+    EMPTY_CANDIDATE_TAGS = {"p", "ol", "ul", "div", "span"}
 
-        if child.tag == "a":
-            href = child.get("href", "").strip()
-            href = urljoin("https://www.prcity.com/", href) if href else ""
-            if href:
-                parts.append(f'<link href="{href}" color="blue"><u>{href}</u></link>')
-            else:
-                link_text = "".join(
-                    child.xpath(".//text()[not(ancestor::script) and not(ancestor::style)]")
-                ).strip()
-                link_text = re.sub(
-                    r"For security reasons,?\s*you must enable JavaScript to view this E-?mail address\.?",
-                    "",
-                    link_text,
-                    flags=re.IGNORECASE
-                ).strip()
-                if link_text:
-                    parts.append(link_text)
-        else:
-            # recurse into this child in case it wraps an <a> deeper inside (e.g. <p><a>...</a></p>)
-            extract_parts(child, parts)
+    for child in list(node):
+        strip_empty_elements(child)
 
-        if child.tail and child.tail.strip():
-            parts.append(child.tail.strip())
+    if node.tag in EMPTY_CANDIDATE_TAGS:
+        has_text = (node.text and node.text.strip()) or any(
+            (child.tail and child.tail.strip()) for child in node
+        )
+        has_meaningful_children = len(node) > 0 
+        if not has_text and not has_meaningful_children:
+            parent = node.getparent()
+            if parent is not None:
+                if node.tail and node.tail.strip():
+                    prev = node.getprevious()
+                    if prev is not None:
+                        prev.tail = (prev.tail or "") + node.tail
+                    else:
+                        parent.text = (parent.text or "") + node.tail
+                parent.remove(node)
 
 
-def save_bid_tables_as_pdf(tree, xpath: str, output_path: str) -> None:
-    styles = getSampleStyleSheet()
-    body_style = styles["Normal"]
-    bid_tables = tree.xpath(xpath)
-    if not bid_tables:
-        print("No tables found for the given xpath — nothing to save")
+
+def clean_node(node, base_url: str = "", exclude_xpaths=None):
+    """Normalize links/images and strip dead elements. Mutates node in place."""
+    for a in node.xpath(".//a[@href]"):
+        href = a.get("href", "").strip()
+        if href and base_url:
+            a.set("href", urljoin(base_url, href))
+
+    for img in node.xpath(".//img[@src]"):
+        src = img.get("src", "").strip()
+        if src and base_url:
+            img.set("src", urljoin(base_url, src))
+        if not img.get("alt"):
+            img.set("alt", "image")
+
+    remove_excluded_elements(node, exclude_xpaths)
+    strip_empty_elements(node)
+    return node
+
+
+def node_to_markdown(node, base_url: str = "", exclude_xpaths=None) -> str:
+    clean_node(node, base_url=base_url, exclude_xpaths=exclude_xpaths)
+    inner_html = etree.tostring(node, encoding="unicode", method="html")
+    text = md(inner_html, heading_style="ATX", bullets="-", strip=["script", "style"])
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+def node_to_pdf_html(node, base_url: str = "", exclude_xpaths=None) -> str:
+    """Like node_to_markdown, but keeps inline styles intact for PDF rendering."""
+    clean_node(node, base_url=base_url, exclude_xpaths=exclude_xpaths)
+    return etree.tostring(node, encoding="unicode", method="html")
+
+def save_nodes_as_pdf(tree, xpath: str, output_path: str, base_url: str = "", exclude_xpaths=None) -> None:
+    nodes = tree.xpath(xpath)
+    if not nodes:
+        print("No nodes found — nothing to save")
         return
 
-    story = []
-    for table_idx, table in enumerate(bid_tables):
-        rows_data = []
-        for tr in table.xpath(".//tr"):
-            cells = tr.xpath("./td")
-            if not cells:
-                continue
+    md_chunks, html_chunks = [], []
+    for idx, node in enumerate(nodes):
+        # clean_node() mutates the node once; reuse it for both outputs
+        clean_node(node, base_url=base_url, exclude_xpaths=exclude_xpaths)
+        inner_html = etree.tostring(node, encoding="unicode", method="html")
 
-            cell_texts = []
-            for td in cells:
-                parts = []
-                extract_parts(td, parts)
-                cell_texts.append(" ".join(p for p in parts if p))
+        md_chunks.append(md(inner_html, heading_style="ATX", bullets="-", strip=["script", "style"]))
+        html_chunks.append(inner_html)
 
-            if not any(cell_texts):
-                continue
+        if idx < len(nodes) - 1:
+            md_chunks.append("\n\n---\n\n")
+            html_chunks.append("<hr>")
 
-            row = [Paragraph(text.replace("\n", "<br/>"), body_style) for text in cell_texts]
-            rows_data.append(row)
+    full_markdown = re.sub(r"\n{3,}", "\n\n", "\n\n".join(md_chunks)).strip()
+    with open(output_path.replace(".pdf", ".md"), "w", encoding="utf-8") as f:
+        f.write(full_markdown)
 
-        if not rows_data:
-            continue
+    html_body = "".join(html_chunks)
 
-        max_cols = max(len(r) for r in rows_data)
-        for r in rows_data:
-            while len(r) < max_cols:
-                r.append(Paragraph("", body_style))
+    css = CSS(string="""
+        @page { size: letter; margin: 40px; }
+        body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; line-height: 1.4; }
+        hr { border: none; border-top: 1px solid #999; margin: 12px 0; }
+        p { margin: 0 0 10px 0; }
+        ol, ul { margin: 4px 0 10px 1.2em; padding: 0; }
+        a { color: blue; text-decoration: underline; }
+    """)
 
-        col_widths = [150] + [370] * (max_cols - 1) if max_cols >= 2 else None
-
-        pdf_table = Table(rows_data, colWidths=col_widths)
-        pdf_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ]))
-
-        story.append(pdf_table)
-        if table_idx < len(bid_tables) - 1:
-            story.append(Spacer(1, 20))
-
-    if not story:
-        print("No rows extracted — nothing to save")
-        return
-
-    doc = SimpleDocTemplate(
-        output_path,
-        pagesize=letter,
-        leftMargin=40,
-        rightMargin=40,
-        topMargin=40,
-        bottomMargin=40,
-    )
-    doc.build(story)
+    HTML(string=f"<html><body>{html_body}</body></html>").write_pdf(output_path, stylesheets=[css])
 
 def regex_date_filter(raw_due_date: str) -> str | None:
     try:

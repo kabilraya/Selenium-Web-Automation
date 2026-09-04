@@ -21,7 +21,7 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+import re
 #make all the path 
 start_time = time.perf_counter()
 
@@ -56,17 +56,19 @@ with SB (
     disable_features = "ChromePDFViewer",
     external_pdf = True,
     locale = "en",
-    log_cdp = True, 
 ) as sb:
-    sb.uc_open_with_reconnect(main_url)
-    
+    sb.uc_open_with_reconnect(main_url, reconnect_time=6)
+
     sb.uc_gui_click_captcha()
     sb.sleep(3)
-    page_source = sb.get_page_source()
-    time.sleep(5)
-    tree = html.fromstring(page_source)
-    all_bids = tree.xpath("(//div[contains(@class,'gem-table') and contains(@class,'gem-table-responsive')])[1]//tbody/tr")
+    sb.switch_to_default_content()
 
+
+    page_source = sb.get_page_source()
+    time.sleep(3)
+    tree = html.fromstring(page_source)
+    project_nodes = tree.xpath("//div[@class='sec-title']/following-sibling::p[./a]")
+    
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -75,80 +77,61 @@ with SB (
     "download_path" : download_path,
     "server_path" : server_path
     }
+   
+    for node_idx, node in enumerate(project_nodes,start=1):
+        
+        bid_title = node.xpath("./a")[0].text_content().strip()
+        
+        match = re.search(r'^([A-Z]{2,5}\s?\d{2,4}-\d{1,4})', bid_title)
+        if match:
+            bid_no = match.group(1)
+        bid_due_date = "Not Specified"
+        print(bid_due_date)
+        print(f"Bid Title: {bid_title} \nBid No: {bid_no}")
+        
 
-    for node_idx, node in enumerate(all_bids,start=1):
+   
+        
     
-        bid_title = node.xpath("./td[2]//a")[0].text_content().strip()
-        bid_no = node.xpath("./td[1]")[0].text_content().strip()
-        date_td = node.xpath("./td[4]")[0]
-        p_tag = date_td.xpath("./p")
-
-        if p_tag:
-            bid_due_date = p_tag[0].text_content().strip()
-        else:
-            bid_due_date = date_td.text_content().strip()
-            
-        formatted_date = regex_date_filter(bid_due_date)
+        file_link = node.xpath("./a")
         
-        date_obj = None
-        if formatted_date:
-            try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
-            except ValueError as e:
-                try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
-                except ValueError as e:
-                    print(f"Cannot Parse the date.. Failed due to: {e}")
-                    continue
-
-        if date_obj and date_obj < datetime.today().date():
+        if not file_link:
             continue
-        print(f"Due Date: {formatted_date}")
-        print(f"Bid Title: {bid_title} \nBid No.: {bid_no}")
-        file_links = node.xpath(".//a")
-        if not file_links:
-            continue
-        
-        # If any one link is found we make a dictionary         
         bid_details[node_idx] = {
-        "bid_no": bid_no,
-        "bid_title": bid_title,          
-        "bid_due_date": formatted_date,        
-        "agency_name": module_name,
-        "files_info": {}
-    }
-    
-        for file_idx, file in enumerate(file_links, start = 1):
-            file_url = file.get("href","").strip()
-            download_name = file_url.split("/")[-1].strip()
-            print(download_name)
-            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
-            # create a session of database to check for duplication of hash and kill the session immediately
-            try:
-                session, _ = create_database_session(database_url=smi_data_url)
-                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
-                session.close()
-                if is_duplicate_hash:
-                    print("Hash Duplication found")
-                    continue
-            except Exception as e:
-                print(f"Session creation failed {e}")
+                    "bid_no": bid_no,
+                    "bid_title": bid_title,          
+                    "bid_due_date": bid_due_date,        
+                    "agency_name": module_name,
+                    "files_info": {}
+                }
+        
+        
+        file_url = file_link[0].get("href","").strip()
+        print(file_url)
+        download_name = file_url.split("/")[-1]
+        print(download_name)
+        file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+        # create a session of database to check for duplication of hash and kill the session immediately
+        try:
+            session, _ = create_database_session(database_url=smi_data_url)
+            is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+            session.close()
+            if is_duplicate_hash:
+                print("Hash Duplication found")
                 continue
-            
-            new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://www.cameroncountytx.gov/",file_url)
-            # ADOBE_VIEWER_DOMAINS = ("acrobat.adobe.com",)
-            # parsed = urlsplit(file_url)
-            # if parsed.netloc in ADOBE_VIEWER_DOMAINS:
-            #     print("Found the Adobe Link... Changing the URL")
-            #     file_url = "https://cdn-sharing.adobecc.com/content/storage/id/urn:aaid:sc:US:26b29f93-fe7a-47a4-ab0f-db14a660b422?access_token=1787751849_urn%3Aaaid%3Asc%3AUS%3A26b29f93-fe7a-47a4-ab0f-db14a660b422%3Bpublic_4a09826658240fe9a9428e3ac807cad3899a077b&api_key=dc_sendtrack&utm_source=chatgpt.com"
-            file = download_files(sb = sb,
-                                  file_url=file_url,
-                                  script_directory=script_directory,
-                                  download_path=download_path,
-                                  file_index=new_file_index,
-                                  file_hash=file_hash)
-            bid_details[node_idx]["files_info"].update(file)
+        except Exception as e:
+            print(f"Session creation failed {e}")
+            continue
+        
+        new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+        file_url = urljoin("https://pascocountyhousing.org/",file_url)
+        file = download_files(sb = sb,
+                              file_url=file_url,
+                              script_directory=script_directory,
+                              download_path=download_path,
+                              file_index=new_file_index,
+                              file_hash=file_hash)
+        bid_details[node_idx]["files_info"].update(file)
 
     has_downloads = any(
         bid["files_info"]
@@ -199,14 +182,13 @@ with SB (
         )
 
         update_value(
-                db_url=smi_record_url, 
-                query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
-                "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
-                new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
-                condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                )
+                    db_url=smi_record_url,
+                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
+                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                    )
         delete_files_in_directory(download_path)
-
+    
         print("Scraping Successful")
 
     

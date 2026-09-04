@@ -13,8 +13,8 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files, regex_date_filter, save_bid_tables_as_pdf,santitize_file_name
-from urllib.parse import urljoin,urlsplit
+from functions import download_files,regex_date_filter,save_nodes_as_pdf, is_direct_download
+from urllib.parse import urljoin,quote
 from datetime import datetime
 from model.smi_model import SMI
 from kabil_utils.extract_and_insertion import extract_from_json_and_insert
@@ -22,6 +22,7 @@ from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
 
+import re
 #make all the path 
 start_time = time.perf_counter()
 
@@ -60,15 +61,16 @@ with SB (
     sb.uc_open_with_reconnect(main_url, reconnect_time=6)
 
     sb.uc_gui_click_captcha()
-    sb.sleep(3)
+    sb.sleep(5)
     sb.switch_to_default_content()
-
-
+    sb.sleep(3)
     page_source = sb.get_page_source()
-    time.sleep(3)
-    tree = html.fromstring(page_source)
-    project_nodes = tree.xpath("//div[@class='bidItems listItems']/div[not(contains(@class,'bidsHeader listHeader'))]")
     
+    tree = html.fromstring(page_source)
+    sb.sleep(3)
+    
+    bid_nodes = tree.xpath("//div[@class='bidItems listItems']/div[not(contains(@class,'bidsHeader listHeader'))]")
+
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -77,18 +79,14 @@ with SB (
     "download_path" : download_path,
     "server_path" : server_path
     }
-   
-    for node_idx, node in enumerate(project_nodes,start=1):
+    
+    for node_idx, node in enumerate(bid_nodes,start=1): 
+        
+        
         
         bid_title = node.xpath("./div[1]/span[1]")[0].text_content().strip()
-        
         bid_no = node.xpath("./div[1]/span[2]/text()")[0].strip()
         bid_due_date = node.xpath("./div[2]/div[2]/span[2]")[0].text_content().strip()
-        if bid_due_date.lower() == "upon contract":
-            print(f"{bid_title} is Upon Contract so skipping")
-            continue
-        print(bid_due_date)
-        print(f"{bid_title} {bid_no}")
         formatted_date = regex_date_filter(bid_due_date)
         date_obj = None
         if formatted_date:
@@ -98,99 +96,100 @@ with SB (
                 try:
                     date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
                 except ValueError as e:
-                    print(f"Date cannot be parsed with error {e}")
+                    print("Couldnt parse the date")
                     continue
         if date_obj and date_obj <= datetime.today().date():
             continue
 
-        directed_links = node.xpath("./div[1]/span[1]/a")
-        if not directed_links:
+        print(f"Bid Title: {bid_title}\nBid No.:{bid_no}\nBid Due Date: {formatted_date}")  
+        directed_link = node.xpath("./div[1]/span[1]/a")
+        if not directed_link:
             continue
         bid_details[node_idx] = {
-            "bid_no": bid_no,
-            "bid_title": bid_title,          
-            "bid_due_date": formatted_date,        
-            "agency_name": module_name,
-            "files_info": {}
-        }
-        for directed_link in directed_links:
-            directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://www.luzernecounty.org/",directed_url)
-            sb.uc_open_with_reconnect(directed_url)
-            sb.sleep(3)
-            sb.uc_gui_click_captcha()
-            sb.sleep(3)
-            sb.switch_to_default_content()
-            sb.sleep(3)
-            page_source = sb.get_page_source()
-            sb.sleep(2)
-            tree = html.fromstring(page_source)
-            notice_filename = f"{bid_no.replace(' ','_').replace('#','')}_bid_notice.pdf"
-            notice_path = os.path.join(download_path, notice_filename)
-            os.makedirs(download_path, exist_ok=True)
+                        "bid_no": bid_no,
+                        "bid_title": bid_title,          
+                        "bid_due_date": formatted_date,        
+                        "agency_name": module_name,
+                        "files_info": {}
+                    }
+        directed_url = directed_link[0].get("href","").strip()
+        directed_url = urljoin("https://www.montgomerynj.gov/",directed_url)
+        sb.uc_open_with_reconnect(directed_url)
+        sb.sleep(5)
+        page_source = sb.get_page_source()
+        sb.sleep(3)
+        tree = html.fromstring(page_source)
+        
+        notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
+        notice_path = os.path.join(download_path, notice_filename)
+        os.makedirs(download_path, exist_ok=True)
+        notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
+        info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details']"
+        
+        is_duplicate_hash = False
+        try:
+            session, _ = create_database_session(database_url=smi_data_url)
+            is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
+            session.close()
+        except Exception as e:
+            print(f"Session creation failed {e}")
+        if is_duplicate_hash:
+            print("Hash Duplication found for notice PDF")
+        else:
+            save_nodes_as_pdf(
+                                                             
+                    xpath=info_table,
+                    tree=tree,
+                    output_path=notice_path,                               
+                    base_url="https://www.montgomerynj.gov/",
+                    )
 
-            notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
-            info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details']"
-            is_duplicate_hash = False
+            if os.path.exists(notice_path):
+                mb_size = os.path.getsize(notice_path) / (1024 * 1024)
+                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+                bid_details[node_idx]["files_info"][new_file_index] = {
+                    "file_name": notice_filename,
+                    "sanitized_file_name": notice_filename,
+                    "file_url": directed_url,
+                    "file_size": f"{mb_size:.5f} MB",
+                    "md5_hash": notice_hash,
+                    "iconverted": 0
+                }
+            else:
+                print("Notice PDF was not created — no tables matched, skipping dictionary update")
+        file_links = tree.xpath("//table[@summary='Bid Details']//tr[contains(normalize-space(),'Related Documents:')]/following-sibling::tr//a")
+        if not file_links:
+            continue
+    
+        
+        for file_idx, file in enumerate(file_links, start = 1):
+            file_url = file.get("href","").strip()
+            file_url = urljoin("https://www.montgomerynj.gov/",file_url)
+            file_url = quote(file_url, safe=":/?&=%")
+            
+            download_name = file_url.split("/")[-1]
+            print(download_name)
+            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+            # create a session of database to check for duplication of hash and kill the session immediately
             try:
                 session, _ = create_database_session(database_url=smi_data_url)
-                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
                 session.close()
+                if is_duplicate_hash:
+                    print("Hash Duplication found")
+                    continue
             except Exception as e:
                 print(f"Session creation failed {e}")
-
-            if is_duplicate_hash:
-                print("Hash Duplication found for notice PDF")
-            else:
-                save_bid_tables_as_pdf(tree, info_table, notice_path)
-    
-                if os.path.exists(notice_path):
-                    mb_size = os.path.getsize(notice_path) / (1024 * 1024)
-                    new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                    bid_details[node_idx]["files_info"][new_file_index] = {
-                        "file_name": notice_filename,
-                        "sanitized_file_name": notice_filename,
-                        "file_url": directed_url,
-                        "file_size": f"{mb_size:.5f} MB",
-                        "md5_hash": notice_hash,
-                        "iconverted": 0
-                    }
-                else:
-                    print("Notice PDF was not created — no tables matched, skipping dictionary update")
-            file_links = tree.xpath("//table[@summary='Bid Details']/tbody/tr[contains(normalize-space(),'Related Documents:')]/following-sibling::tr//a")
-
-            print(len(file_links))
-
-            if not file_links:
                 continue
+            new_file_index = len(bid_details[node_idx]["files_info"]) + 1
             
-            for file_idx, file_link in enumerate(file_links, start = 1):
-                file_url = file_link.get("href","").strip()
-                print(file_url)
-                download_name = file_url.split("/")[-1]
-                print(download_name)
-                file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
-                # create a session of database to check for duplication of hash and kill the session immediately
-                try:
-                    session, _ = create_database_session(database_url=smi_data_url)
-                    is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
-                    session.close()
-                    if is_duplicate_hash:
-                        print("Hash Duplication found")
-                        continue
-                except Exception as e:
-                    print(f"Session creation failed {e}")
-                    continue
-                
-                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                file_url = urljoin("https://www.luzernecounty.org/",file_url)
-                file = download_files(sb = sb,
-                                      file_url=file_url,
-                                      script_directory=script_directory,
-                                      download_path=download_path,
-                                      file_index=new_file_index,
-                                      file_hash=file_hash)
-                bid_details[node_idx]["files_info"].update(file)
+            file = download_files(sb = sb,
+                                  file_url=file_url,
+                                  script_directory=script_directory,
+                                  download_path=download_path,
+                                  file_index=new_file_index,
+                                  file_hash=file_hash)
+            bid_details[node_idx]["files_info"].update(file)
 
     has_downloads = any(
         bid["files_info"]
@@ -208,7 +207,7 @@ with SB (
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
-
+        
         bid_counts = extract_from_json_and_insert(
             json_path=json_path,
             db_url=smi_data_url,
@@ -242,8 +241,8 @@ with SB (
 
         update_value(
                     db_url=smi_record_url,
-                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
+                    query="UPDATE tbl_smirecord SET baseURL = :baseURL_value, brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value":main_url},
                     condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
                     )
         delete_files_in_directory(download_path)

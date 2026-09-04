@@ -13,15 +13,16 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files, regex_date_filter
-from urllib.parse import urljoin,urlsplit
+from functions import download_files, regex_date_filter,is_direct_download,form_filling
+from urllib.parse import urljoin,urlsplit, quote
 from datetime import datetime
 from model.smi_model import SMI
-from kabil_utils.extract_and_insertion import extract_from_json_and_insert
+from kabil_utils.vpn_required_db_insertion import extract_from_json_and_add_to_db
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+from kabil_utils.vpn_disconnet import disconnect_vpn
+import re
 #make all the path 
 start_time = time.perf_counter()
 
@@ -44,6 +45,10 @@ env_path = os.path.join(script_directory,".env")
 ] = get_env(env_path)
 
 download_path=os.path.join(script_directory, "download")
+BID_NO_PATTERN = re.compile(
+            r'^(?:RFQ/RFP|RFQ|RFP|Bid)\s*#?\s*[\w-]+',
+            re.IGNORECASE
+        )
 
 with SB (
     uc = True,
@@ -56,16 +61,19 @@ with SB (
     disable_features = "ChromePDFViewer",
     external_pdf = True,
     locale = "en",
-    log_cdp = True, 
 ) as sb:
-    sb.uc_open_with_reconnect(main_url)
-    
+    sb.uc_open_with_reconnect(main_url, reconnect_time=6)
+
     sb.uc_gui_click_captcha()
+    sb.sleep(5)
+    sb.switch_to_default_content()
     sb.sleep(3)
     page_source = sb.get_page_source()
-    time.sleep(5)
+    
     tree = html.fromstring(page_source)
-    all_bids = tree.xpath("(//div[contains(@class,'gem-table') and contains(@class,'gem-table-responsive')])[1]//tbody/tr")
+    sb.sleep(3)
+    
+    bid_nodes = tree.xpath("//div[@class='accordion ']/div[@class='accordion-item']")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -75,79 +83,89 @@ with SB (
     "download_path" : download_path,
     "server_path" : server_path
     }
-
-    for node_idx, node in enumerate(all_bids,start=1):
-    
-        bid_title = node.xpath("./td[2]//a")[0].text_content().strip()
-        bid_no = node.xpath("./td[1]")[0].text_content().strip()
-        date_td = node.xpath("./td[4]")[0]
-        p_tag = date_td.xpath("./p")
-
-        if p_tag:
-            bid_due_date = p_tag[0].text_content().strip()
-        else:
-            bid_due_date = date_td.text_content().strip()
-            
-        formatted_date = regex_date_filter(bid_due_date)
+    print(len(bid_nodes))
+    for node_idx, node in enumerate(bid_nodes,start=1):        
         
-        date_obj = None
-        if formatted_date:
-            try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
-            except ValueError as e:
-                try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
-                except ValueError as e:
-                    print(f"Cannot Parse the date.. Failed due to: {e}")
-                    continue
-
-        if date_obj and date_obj < datetime.today().date():
-            continue
-        print(f"Due Date: {formatted_date}")
-        print(f"Bid Title: {bid_title} \nBid No.: {bid_no}")
-        file_links = node.xpath(".//a")
-        if not file_links:
-            continue
-        
-        # If any one link is found we make a dictionary         
-        bid_details[node_idx] = {
-        "bid_no": bid_no,
-        "bid_title": bid_title,          
-        "bid_due_date": formatted_date,        
-        "agency_name": module_name,
-        "files_info": {}
-    }
-    
-        for file_idx, file in enumerate(file_links, start = 1):
-            file_url = file.get("href","").strip()
-            download_name = file_url.split("/")[-1].strip()
-            print(download_name)
-            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
-            # create a session of database to check for duplication of hash and kill the session immediately
-            try:
-                session, _ = create_database_session(database_url=smi_data_url)
-                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
-                session.close()
-                if is_duplicate_hash:
-                    print("Hash Duplication found")
-                    continue
-            except Exception as e:
-                print(f"Session creation failed {e}")
+        bid_status = node.xpath(".//strong[contains(normalize-space(),'Status:')]/following-sibling::text()")
+        if not bid_status:
+            bid_status = node.xpath(".//strong[contains(normalize-space(),'Status: ')]")[0].text_content().strip()    
+            bid_status = bid_status.split(":",1)[-1].strip()
+        bid_status = bid_status[0].strip()
+        if not bid_status.lower() == "open":
                 continue
+        
+        bid_title = node.xpath("./h2")[0].text_content().strip()
+        bid_title = bid_title.split("(",1)[0].strip()
+        match = BID_NO_PATTERN.match(bid_title)
+        if match:
+            bid_no = match.group(0).strip()
+        else:
+            bid_no = bid_title[:25]
+        formatted_date = "Not Specified"
+        
+        print(f"Bid Title: {bid_title}\nBid No.:{bid_no}\nBid Due Date: {formatted_date}")
+        
+        directed_links = node.xpath(".//ul//a")
+        
+        if not directed_links:
+            continue
+        bid_details[node_idx] = {
+                        "bid_no": bid_no,
+                        "bid_title": bid_title,          
+                        "bid_due_date": formatted_date,        
+                        "agency_name": module_name,
+                        "files_info": {}
+                    }
+        file_urls = []
+        for directed_link in directed_links:
+            directed_url = directed_link.get("href", "").strip()
+            if not directed_url:
+                continue
+            directed_url = urljoin("https://rsccd.edu/", directed_url)
+
+            if is_direct_download(directed_url):
+                file_urls.append(directed_url)
+            else:
+                # this link gates behind a form — resolve it to its real download link(s)
+                main_window = sb.driver.current_window_handle
+                sb.execute_script("window.open(arguments[0], '_blank');", directed_url)
+                sb.sleep(2)
+                sb.switch_to_window(sb.driver.window_handles[-1])
+                form_filling(sb)
+                sb.sleep(3)
+                page_source = sb.get_page_source()
+                sb.sleep(3)
+                popup_tree = html.fromstring(page_source)
+                file_elements = popup_tree.xpath("//div[@id='view-pageDescription']//a")
+                sb.driver.close()
+                sb.switch_to_window(main_window)
+
+                resolved_urls = [
+                    urljoin("https://rsccd.edu/", el.get("href", "").strip())
+                    for el in file_elements
+                    if el.get("href", "").strip()
+                ]
+                file_urls.extend(resolved_urls)
+
+        
+        seen = set()
+        file_urls = [u for u in file_urls if not (u in seen or seen.add(u))]
+
+        for file_idx, file_url in enumerate(file_urls, start=1):
+            download_name = file_url.split("/")[-1]
+            print(download_name)
+            file_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=download_name)
             
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://www.cameroncountytx.gov/",file_url)
-            # ADOBE_VIEWER_DOMAINS = ("acrobat.adobe.com",)
-            # parsed = urlsplit(file_url)
-            # if parsed.netloc in ADOBE_VIEWER_DOMAINS:
-            #     print("Found the Adobe Link... Changing the URL")
-            #     file_url = "https://cdn-sharing.adobecc.com/content/storage/id/urn:aaid:sc:US:26b29f93-fe7a-47a4-ab0f-db14a660b422?access_token=1787751849_urn%3Aaaid%3Asc%3AUS%3A26b29f93-fe7a-47a4-ab0f-db14a660b422%3Bpublic_4a09826658240fe9a9428e3ac807cad3899a077b&api_key=dc_sendtrack&utm_source=chatgpt.com"
-            file = download_files(sb = sb,
-                                  file_url=file_url,
-                                  script_directory=script_directory,
-                                  download_path=download_path,
-                                  file_index=new_file_index,
-                                  file_hash=file_hash)
+            quoted_url = quote(file_url, safe=":/?&=%")
+            file = download_files(
+                sb=sb,
+                file_url=quoted_url,
+                script_directory=script_directory,
+                download_path=download_path,
+                file_index=new_file_index,
+                file_hash=file_hash,
+            )
             bid_details[node_idx]["files_info"].update(file)
 
     has_downloads = any(
@@ -166,8 +184,9 @@ with SB (
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
-
-        bid_counts = extract_from_json_and_insert(
+        disconnect_vpn()
+        time.sleep(5)
+        bid_counts = extract_from_json_and_add_to_db(
             json_path=json_path,
             db_url=smi_data_url,
             region_name=region_name,
@@ -205,8 +224,9 @@ with SB (
                 new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
                 condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
                 )
+        
         delete_files_in_directory(download_path)
-
+    
         print("Scraping Successful")
 
     
