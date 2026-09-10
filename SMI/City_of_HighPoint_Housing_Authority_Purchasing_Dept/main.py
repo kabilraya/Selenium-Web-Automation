@@ -17,12 +17,11 @@ from functions import download_files, regex_date_filter, save_nodes_as_pdf
 from urllib.parse import urljoin,quote
 from datetime import datetime
 from model.smi_model import SMI
-from kabil_utils.vpn_required_db_insertion import extract_from_json_and_add_to_db
+from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-from kabil_utils.vpn_disconnet import disconnect_vpn
-
+import re
 #make all the path 
 start_time = time.perf_counter()
 
@@ -85,13 +84,17 @@ with SB (
         if bid_due_date.lower() == "upon contract":
             print(f"{bid_title} is Upon Contract so skipping")
             continue
-        print(bid_due_date)
-        bid_no = node.xpath("./div[1]/span[2]/text()")[0].strip()
+        
+        match = re.search(r'\b\d{2,5}-\d{6}\b', bid_title)
+        if match:
+            bid_no = match.group(0)
+        else:
+            bid_no = bid_title[:25]
         if bid_no in seen_bid_no:
             print(f"\n\n{bid_no} is repeated so skipping this\n\n")
             continue
         seen_bid_no.add(bid_no)
-        print(f"{bid_title} {bid_no}")
+        
         formatted_date = regex_date_filter(bid_due_date)
         date_obj = None
         if formatted_date:
@@ -105,7 +108,7 @@ with SB (
                     continue
         if date_obj and date_obj <= datetime.today().date():
             continue
-
+        print(f"Bid Title: {bid_title} \nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
         directed_links = node.xpath("./div[1]/span[1]/a")
         if not directed_links:
             continue
@@ -118,7 +121,7 @@ with SB (
         }
         for directed_link in directed_links:
             directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://www.alvin.gov/",directed_url)
+            directed_url = urljoin("https://www.highpointnc.gov/",directed_url)
             sb.uc_open_with_reconnect(directed_url)
             sb.sleep(3)
             sb.uc_gui_click_captcha()
@@ -128,37 +131,47 @@ with SB (
             page_source = sb.get_page_source()
             sb.sleep(2)
             tree = html.fromstring(page_source)
-            notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
+            notice_filename = f"{bid_no.replace(' ','_').replace('#','')}_bid_notice.pdf"
             notice_path = os.path.join(download_path, notice_filename)
             os.makedirs(download_path, exist_ok=True)
 
             notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
-            info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details']"
+            info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details'] | //table[@role='presentation' and contains(@style,'background-color')]"
             
             
-            save_nodes_as_pdf(
-                                                     
-                        xpath=info_table,
-                        tree=tree,
-                        output_path=notice_path,                               
-                        base_url="https://www.alvin.gov/",
-            )
-    
-            if os.path.exists(notice_path):
-                mb_size = os.path.getsize(notice_path) / (1024 * 1024)
-                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                bid_details[node_idx]["files_info"][new_file_index] = {
-                    "file_name": notice_filename,
-                    "sanitized_file_name": notice_filename,
-                    "file_url": directed_url,
-                    "file_size": f"{mb_size:.5f} MB",
-                    "md5_hash": notice_hash,
-                    "iconverted": 0
-                }
-            else:
-                print("Notice PDF was not created — no tables matched, skipping dictionary update")
-            file_links = tree.xpath("//tr[contains(normalize-space(),'Related Documents:')]/following-sibling::tr//a")
+            is_duplicate_hash = False
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
+                session.close()
+            except Exception as e:
+                print(f"Session creation failed {e}")
 
+            if is_duplicate_hash:
+                print("Hash Duplication found for notice PDF")
+            else:
+                save_nodes_as_pdf(
+                                                         
+                            xpath=info_table,
+                            tree=tree,
+                            output_path=notice_path,                               
+                            base_url="https://www.highpointnc.gov/",
+                )
+    
+                if os.path.exists(notice_path):
+                    mb_size = os.path.getsize(notice_path) / (1024 * 1024)
+                    new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+                    bid_details[node_idx]["files_info"][new_file_index] = {
+                        "file_name": notice_filename,
+                        "sanitized_file_name": notice_filename,
+                        "file_url": directed_url,
+                        "file_size": f"{mb_size:.5f} MB",
+                        "md5_hash": notice_hash,
+                        "iconverted": 0
+                    }
+                else:
+                    print("Notice PDF was not created — no tables matched, skipping dictionary update")
+            file_links = tree.xpath("//tr[contains(normalize-space(),'Related Documents:')]/following-sibling::tr//a")
             print(len(file_links))
 
             if not file_links:
@@ -166,7 +179,7 @@ with SB (
             
             for file_idx, file_link in enumerate(file_links, start = 1):
                 file_url = file_link.get("href","").strip()
-                file_url = urljoin("https://www.alvin.gov/",file_url)
+                file_url = urljoin("https://www.highpointnc.gov/",file_url)
                 file_url = quote(file_url,safe="/:?&=#%")
                 print(file_url)
 
@@ -201,49 +214,48 @@ with SB (
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
-        disconnect_vpn()
-        time.sleep(5)
-        bid_counts = extract_from_json_and_add_to_db(
-            json_path=json_path,
-            db_url=smi_data_url,
-            region_name=region_name,
-            endpoint_url=endpoint_url,
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key,
-        )
-        end_time = time.perf_counter()
-        total_execution_time = round((end_time - start_time) / 60)
-        total_bids = bid_counts["total_bid"]
-        total_new_bid = bid_counts["total_new_bid"]
-        total_new_bid_file = bid_counts["total_new_bid_file"]
-        print(f"Total bids: {total_bids}")
-        print(f"Total new bids: {total_new_bid}")
-        print(f"Total new bid files: {total_new_bid_file}")
-        print(f"Process took around {total_execution_time}")
 
-        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+        # bid_counts = extract_from_json_and_insert(
+        #     json_path=json_path,
+        #     db_url=smi_data_url,
+        #     region_name=region_name,
+        #     endpoint_url=endpoint_url,
+        #     aws_access_key_id=aws_access_key_id,
+        #     aws_secret_access_key=aws_secret_access_key,
+        # )
+        # end_time = time.perf_counter()
+        # total_execution_time = round((end_time - start_time) / 60)
+        # total_bids = bid_counts["total_bid"]
+        # total_new_bid = bid_counts["total_new_bid"]
+        # total_new_bid_file = bid_counts["total_new_bid_file"]
+        # print(f"Total bids: {total_bids}")
+        # print(f"Total new bids: {total_new_bid}")
+        # print(f"Total new bid files: {total_new_bid_file}")
+        # print(f"Process took around {total_execution_time}")
 
-        session, _ = create_database_session(database_url=smi_record_url)
-        insert_into_record_db(
-            session = session,
-            ecgain=ecgains,
-            module_name=module_name.split(".")[0],
-            total_bid= total_bids,
-            total_new_bid=total_new_bid,
-            total_new_bid_files=total_new_bid_file,
-            timeelapsed=total_execution_time
-        )
+        # #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
 
-        update_value(
-                    db_url=smi_record_url, 
-                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
-                    "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
-                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
-                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                    )
-        delete_files_in_directory(download_path)
+        # session, _ = create_database_session(database_url=smi_record_url)
+        # insert_into_record_db(
+        #     session = session,
+        #     ecgain=ecgains,
+        #     module_name=module_name.split(".")[0],
+        #     total_bid= total_bids,
+        #     total_new_bid=total_new_bid,
+        #     total_new_bid_files=total_new_bid_file,
+        #     timeelapsed=total_execution_time
+        # )
+
+        # update_value(
+        #             db_url=smi_record_url, 
+        #             query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
+        #             "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
+        #             new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
+        #             condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+        #             )
+        # delete_files_in_directory(download_path)
     
-        print("Scraping Successful")
+        # print("Scraping Successful")
 
     
 

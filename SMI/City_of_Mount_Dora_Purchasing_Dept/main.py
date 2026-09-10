@@ -3,20 +3,18 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from seleniumbase import SB
 import sys
-import re
 import os 
 import json
 from lxml import html
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..","..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import time
-import re
 from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files, regex_date_filter
-from urllib.parse import urljoin,urlsplit
+from functions import download_files, regex_date_filter, save_nodes_as_pdf
+from urllib.parse import urljoin,quote
 from datetime import datetime
 from model.smi_model import SMI
 from kabil_utils.extract_and_insertion import extract_from_json_and_insert
@@ -59,14 +57,18 @@ with SB (
     external_pdf = True,
     locale = "en",
 ) as sb:
-    sb.uc_open_with_reconnect(main_url)
-    
+    sb.uc_open_with_reconnect(main_url, reconnect_time=6)
+
     sb.uc_gui_click_captcha()
-    sb.sleep(5)
+    sb.sleep(3)
+    sb.switch_to_default_content()
+
+
     page_source = sb.get_page_source()
-    time.sleep(5)
+    time.sleep(3)
     tree = html.fromstring(page_source)
-    all_bids = tree.xpath("//div[@class='bidItems listItems']/div[position()>1]")
+    project_nodes = tree.xpath("//div[@class='bidItems listItems']/div[not(contains(@class,'bidsHeader listHeader'))]")
+    
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -75,78 +77,115 @@ with SB (
     "download_path" : download_path,
     "server_path" : server_path
     }
-
-    for node_idx, node in enumerate(all_bids,start=1):
-
-        bid_information = node.xpath("./div/span")[0].text_content().strip()
-        match = re.match(r'^(Bid\s+[\d\-]+)\s+(.*)$', bid_information)
-
-        if match:
-            bid_no = match.group(1).strip()
-            bid_title = match.group(2).strip()
-        
-        bid_due_date = node.xpath("./div[@class='bidStatus']/div[2]/span[2]")[0].text_content().strip()
-        # print(bid_due_date)
+    seen_bid_no = set()
+    for node_idx, node in enumerate(project_nodes,start=1):
+        bid_title = node.xpath("./div[1]/span[1]")[0].text_content().strip()
+        bid_due_date = node.xpath("./div[2]/div[2]/span[2]")[0].text_content().strip()
+        if bid_due_date.lower() == "upon contract":
+            print(f"{bid_title} is Upon Contract so skipping")
+            continue
+        print(bid_due_date)
+        bid_no = node.xpath("./div[1]/span[2]/text()")[0].strip()
+        if bid_no in seen_bid_no:
+            print(f"\n\n{bid_no} is repeated so skipping this\n\n")
+            continue
+        seen_bid_no.add(bid_no)
+        print(f"{bid_title} {bid_no}")
         formatted_date = regex_date_filter(bid_due_date)
-
         date_obj = None
         if formatted_date:
             try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
             except ValueError as e:
                 try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
                 except ValueError as e:
-                    print(f"Cannot Parse the date.. Failed due to: {e}")
+                    print(f"Date cannot be parsed with error {e}")
                     continue
-
-        if date_obj and date_obj < datetime.today().date():
-            
+        if date_obj and date_obj <= datetime.today().date():
             continue
 
-        #Get all the links on that node
-        directed_links = node.xpath(".//a")
+        directed_links = node.xpath("./div[1]/span[1]/a")
         if not directed_links:
             continue
-        
-        # If any one link is found we make a dictionary         
         bid_details[node_idx] = {
-        "bid_no": bid_no,
-        "bid_title": bid_title,          
-        "bid_due_date": formatted_date,        
-        "agency_name": module_name,
-        "files_info": {}
-    }
-        for _, directed_link in enumerate(directed_links):
+            "bid_no": bid_no,
+            "bid_title": bid_title,          
+            "bid_due_date": formatted_date,        
+            "agency_name": module_name,
+            "files_info": {}
+        }
+        for directed_link in directed_links:
             directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://www.highpointnc.gov/",directed_url)
+            directed_url = urljoin("https://www.mountdora.gov/",directed_url)
             sb.uc_open_with_reconnect(directed_url)
-            
-            sb.sleep(5)
+            sb.sleep(3)
+            sb.uc_gui_click_captcha()
+            sb.sleep(3)
+            sb.switch_to_default_content()
+            sb.sleep(3)
             page_source = sb.get_page_source()
-            
-            time.sleep(3)
+            sb.sleep(2)
             tree = html.fromstring(page_source)
-            file_links = tree.xpath("//div[@class='fr-view responsiveEditor']//a")
-            for file_idx, file in enumerate(file_links, start = 1):
-                file_url = file.get("href","").strip()
+            notice_filename = f"{bid_no.replace(' ','_').replace('#','')}_bid_notice.pdf"
+            notice_path = os.path.join(download_path, notice_filename)
+            os.makedirs(download_path, exist_ok=True)
+
+            notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
+            info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details'] | //table[@role='presentation' and contains(@style,'background-color')]"
+            
+            
+            is_duplicate_hash = False
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
+                session.close()
+            except Exception as e:
+                print(f"Session creation failed {e}")
+
+            if is_duplicate_hash:
+                print("Hash Duplication found for notice PDF")
+            else:
+                save_nodes_as_pdf(
+                                                         
+                            xpath=info_table,
+                            tree=tree,
+                            output_path=notice_path,                               
+                            base_url="https://www.mountdora.gov/",
+                )
+    
+                if os.path.exists(notice_path):
+                    mb_size = os.path.getsize(notice_path) / (1024 * 1024)
+                    new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+                    bid_details[node_idx]["files_info"][new_file_index] = {
+                        "file_name": notice_filename,
+                        "sanitized_file_name": notice_filename,
+                        "file_url": directed_url,
+                        "file_size": f"{mb_size:.5f} MB",
+                        "md5_hash": notice_hash,
+                        "iconverted": 0
+                    }
+                else:
+                    print("Notice PDF was not created — no tables matched, skipping dictionary update")
+            file_links = tree.xpath("//tr[contains(normalize-space(),'Related Documents:')]/following-sibling::tr//a")
+            print(len(file_links))
+
+            if not file_links:
+                continue
+            
+            for file_idx, file_link in enumerate(file_links, start = 1):
+                file_url = file_link.get("href","").strip()
+                file_url = urljoin("https://www.mountdora.gov/",file_url)
+                file_url = quote(file_url,safe="/:?&=#%")
+                print(file_url)
+
                 download_name = file_url.split("/")[-1]
                 print(download_name)
                 file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
                 # create a session of database to check for duplication of hash and kill the session immediately
-                try:
-                    session, _ = create_database_session(database_url=smi_data_url)
-                    is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
-                    session.close()
-                    if is_duplicate_hash:
-                        print("Hash Duplication found")
-                        continue
-                except Exception as e:
-                    print(f"Session creation failed {e}")
-                    continue
                 
                 new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                file_url = urljoin("https://www.highpointnc.gov/",file_url)
+                
                 file = download_files(sb = sb,
                                       file_url=file_url,
                                       script_directory=script_directory,
@@ -204,13 +243,14 @@ with SB (
         )
 
         update_value(
-                    db_url=smi_record_url,
-                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
+                    db_url=smi_record_url, 
+                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
+                    "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
                     condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
                     )
         delete_files_in_directory(download_path)
-
+    
         print("Scraping Successful")
 
     

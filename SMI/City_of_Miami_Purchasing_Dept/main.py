@@ -17,11 +17,10 @@ from functions import download_files, regex_date_filter, save_nodes_as_pdf
 from urllib.parse import urljoin,quote
 from datetime import datetime
 from model.smi_model import SMI
-from kabil_utils.vpn_required_db_insertion import extract_from_json_and_add_to_db
+from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-from kabil_utils.vpn_disconnet import disconnect_vpn
 
 #make all the path 
 start_time = time.perf_counter()
@@ -118,7 +117,7 @@ with SB (
         }
         for directed_link in directed_links:
             directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://www.alvin.gov/",directed_url)
+            directed_url = urljoin("https://www.miamiok.gov/",directed_url)
             sb.uc_open_with_reconnect(directed_url)
             sb.sleep(3)
             sb.uc_gui_click_captcha()
@@ -128,37 +127,47 @@ with SB (
             page_source = sb.get_page_source()
             sb.sleep(2)
             tree = html.fromstring(page_source)
-            notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
+            notice_filename = f"{bid_no.replace(' ','_').replace('#','')}_bid_notice.pdf"
             notice_path = os.path.join(download_path, notice_filename)
             os.makedirs(download_path, exist_ok=True)
 
             notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
-            info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details']"
+            info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details'] | //table[@role='presentation' and contains(@style,'background-color')]"
             
             
-            save_nodes_as_pdf(
-                                                     
-                        xpath=info_table,
-                        tree=tree,
-                        output_path=notice_path,                               
-                        base_url="https://www.alvin.gov/",
-            )
-    
-            if os.path.exists(notice_path):
-                mb_size = os.path.getsize(notice_path) / (1024 * 1024)
-                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                bid_details[node_idx]["files_info"][new_file_index] = {
-                    "file_name": notice_filename,
-                    "sanitized_file_name": notice_filename,
-                    "file_url": directed_url,
-                    "file_size": f"{mb_size:.5f} MB",
-                    "md5_hash": notice_hash,
-                    "iconverted": 0
-                }
-            else:
-                print("Notice PDF was not created — no tables matched, skipping dictionary update")
-            file_links = tree.xpath("//tr[contains(normalize-space(),'Related Documents:')]/following-sibling::tr//a")
+            is_duplicate_hash = False
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
+                session.close()
+            except Exception as e:
+                print(f"Session creation failed {e}")
 
+            if is_duplicate_hash:
+                print("Hash Duplication found for notice PDF")
+            else:
+                save_nodes_as_pdf(
+                                                         
+                            xpath=info_table,
+                            tree=tree,
+                            output_path=notice_path,                               
+                            base_url="https://www.miamiok.gov/",
+                )
+    
+                if os.path.exists(notice_path):
+                    mb_size = os.path.getsize(notice_path) / (1024 * 1024)
+                    new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+                    bid_details[node_idx]["files_info"][new_file_index] = {
+                        "file_name": notice_filename,
+                        "sanitized_file_name": notice_filename,
+                        "file_url": directed_url,
+                        "file_size": f"{mb_size:.5f} MB",
+                        "md5_hash": notice_hash,
+                        "iconverted": 0
+                    }
+                else:
+                    print("Notice PDF was not created — no tables matched, skipping dictionary update")
+            file_links = tree.xpath("//tr[contains(normalize-space(),'Related Documents:')]/following-sibling::tr//a")
             print(len(file_links))
 
             if not file_links:
@@ -166,7 +175,7 @@ with SB (
             
             for file_idx, file_link in enumerate(file_links, start = 1):
                 file_url = file_link.get("href","").strip()
-                file_url = urljoin("https://www.alvin.gov/",file_url)
+                file_url = urljoin("https://www.miamiok.gov/",file_url)
                 file_url = quote(file_url,safe="/:?&=#%")
                 print(file_url)
 
@@ -174,7 +183,16 @@ with SB (
                 print(download_name)
                 file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
                 # create a session of database to check for duplication of hash and kill the session immediately
-                
+                try:
+                    session, _ = create_database_session(database_url=smi_data_url)
+                    is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                    session.close()
+                    if is_duplicate_hash:
+                        print("Hash Duplication found")
+                        continue
+                except Exception as e:
+                    print(f"Session creation failed {e}")
+                    continue
                 new_file_index = len(bid_details[node_idx]["files_info"]) + 1
                 
                 file = download_files(sb = sb,
@@ -201,9 +219,8 @@ with SB (
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
-        disconnect_vpn()
-        time.sleep(5)
-        bid_counts = extract_from_json_and_add_to_db(
+
+        bid_counts = extract_from_json_and_insert(
             json_path=json_path,
             db_url=smi_data_url,
             region_name=region_name,

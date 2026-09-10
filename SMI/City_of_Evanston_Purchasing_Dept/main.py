@@ -13,8 +13,8 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files,regex_date_filter
-from urllib.parse import urljoin, quote
+from functions import download_files, regex_date_filter
+from urllib.parse import urljoin,urlsplit,quote
 from datetime import datetime
 from model.smi_model import SMI
 from kabil_utils.extract_and_insertion import extract_from_json_and_insert
@@ -68,8 +68,8 @@ with SB (
     tree = html.fromstring(page_source)
     sb.sleep(3)
     
-    bid_nodes = tree.xpath("//div[normalize-space()='Current Year Solicitations'][@class='block']/following-sibling::div[1]/div/div/ul[contains(normalize-space(),'IFB-2027.01 - FMIS Serving Lines')]/preceding-sibling::ul")
-
+    bid_nodes = tree.xpath("//div[@class='table-responsive']/table/tbody/tr")
+    print(len(bid_nodes))
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -80,31 +80,46 @@ with SB (
     }
     
     for node_idx, node in enumerate(bid_nodes,start=1): 
+        bid_due_date = node.xpath("./td[4]")[0].text_content().strip()
+        splits = bid_due_date.split("**",1)
+        if splits:
+            bid_due_date = splits[-1]
+        formatted_date = regex_date_filter(bid_due_date)
         
+        date_obj = None
+        if formatted_date:
+            try:
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+            except ValueError as e:
+                try:
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                except ValueError as e:
+                    print("Couldn't parse the date")
+                    continue
+        if date_obj and date_obj <= datetime.today().date():
+            print(f"{formatted_date} is expired... Skipping")
+            continue
         
+        bid_title = node.xpath("./td[5]")[0].text_content().strip()
+        match = re.match(r"^[A-Za-z]+\s+\d{2}-\d{2}", bid_title)
+        bid_no = match.group() if match else bid_title[:25]
+        print(f"Bid Title:{bid_title} \nBid No: {bid_no}")
+        print(formatted_date)
         
-        bid_title = node.xpath("./li/p[./a]")[0].text_content().strip()
-        bid_no = bid_title.rsplit("–",1)[0].strip()
-        
-        
-        formatted_date = "Not Specified"
-        
-
-        print(f"Bid Title: {bid_title}\nBid No.:{bid_no}\nBid Due Date: {formatted_date}")  
         file_links = node.xpath(".//a")
+        print(len(file_links))
         if not file_links:
             continue
-        bid_details[node_idx] = {
-                        "bid_no": bid_no,
-                        "bid_title": bid_title,          
-                        "bid_due_date": formatted_date,        
-                        "agency_name": module_name,
-                        "files_info": {}
-        }
-    
         
-        for file_idx, file in enumerate(file_links, start = 1):
-            file_url = file.get("href","").strip()
+        bid_details[node_idx] = {
+                "bid_no": bid_no,
+                "bid_title": bid_title,          
+                "bid_due_date": formatted_date,        
+                "agency_name": module_name,
+                "files_info": {}
+            }
+        for file_idx, file_link in enumerate(file_links, start = 1):
+            file_url = file_link.get("href","").strip()
             download_name = file_url.split("/")[-1]
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
@@ -119,16 +134,17 @@ with SB (
             except Exception as e:
                 print(f"Session creation failed {e}")
                 continue
-            
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://www.lex4.org/",file_url)
-            file_url = quote(file_url, safe="/?%:&")
+            
+            file_url = urljoin("https://www.cityofevanston.org/",file_url)
+            file_url = quote(file_url,safe="%=:/&?")
             file = download_files(sb = sb,
                                   file_url=file_url,
                                   script_directory=script_directory,
                                   download_path=download_path,
                                   file_index=new_file_index,
-                                  file_hash=file_hash)
+                                  file_hash=file_hash,
+                                  )
             bid_details[node_idx]["files_info"].update(file)
 
     has_downloads = any(
@@ -182,7 +198,7 @@ with SB (
         update_value(
                     db_url=smi_record_url,
                     query="UPDATE tbl_smirecord SET baseURL = :baseURL_value, brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value" : main_url},
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1","baseURL_value" : main_url},
                     condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
                     )
         delete_files_in_directory(download_path)

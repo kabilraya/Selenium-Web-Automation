@@ -3,28 +3,75 @@ import os
 import re
 import time
 import zipfile
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 from datetime import datetime
 import shutil
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
-
-def regex_date_filter(raw_due_date:str) -> str:
+import re
+import requests
+import gdown
+def is_direct_download(url, session=None):
+    req = session or requests
     try:
-        match = re.search(r'([a-zA-Z]+)\s+(\d{1,2}),\s*(\d{4})',raw_due_date)
+        resp = req.head(url, allow_redirects=True, timeout=10)
 
-        if match:
-            date_str = match.group(0) #groups the matches into a single string
-            parsed_date = datetime.strptime(date_str,"%B %d, %Y")
-            due_date = f"{parsed_date.month}/{parsed_date.day}/{parsed_date.year}"
-        else:
-            due_date = None
+        # some servers don't implement HEAD properly — fall back to GET
+        if resp.status_code >= 400 or not resp.headers.get('Content-Type'):
+            resp = req.get(url, stream=True, timeout=10)
+            resp.close()
 
-        return due_date
-    except Exception as e:
-        print("error during parsing the date")
+        content_type = resp.headers.get('Content-Type', '').lower()
+        content_disposition = resp.headers.get('Content-Disposition', '').lower()
+
+        if 'attachment' in content_disposition:
+            return True   
+        if content_type and 'text/html' not in content_type:
+            return True   
+
+        return False  
+
+    except requests.RequestException:
+        return False
+
+def regex_date_filter(raw_due_date: str) -> str | None:
+    if not raw_due_date:
+        return None
+
+    # ISO format: 2026-09-11
+    iso_match = re.search(r'(\d{4}-\d{1,2}-\d{1,2})', raw_due_date)
+    if iso_match:
+        try:
+            date_obj = datetime.strptime(iso_match.group(1), "%Y-%m-%d")
+            return date_obj.strftime("%m/%d/%Y")
+        except ValueError as e:
+            print(f"Matched ISO pattern but failed to parse: {e}")
+
+    # mm/dd/yyyy or mm-dd-yyyy
+    numeric_match = re.search(r'(\d{1,2}[/-]\d{1,2}[/-]\d{4})', raw_due_date)
+    if numeric_match:
+        raw = numeric_match.group(1).replace("-", "/")
+        try:
+            date_obj = datetime.strptime(raw, "%m/%d/%Y")
+            return date_obj.strftime("%m/%d/%Y")
+        except ValueError as e:
+            print(f"Matched numeric pattern but failed to parse: {e}")
+
+    # Month dd, yyyy
+    text_match = re.search(r'([A-Za-z]+\s+\d{1,2},?\s+\d{4})', raw_due_date)
+    if text_match:
+        raw = text_match.group(1).replace(",", "")
+        for fmt in ("%B %d %Y", "%b %d %Y"):
+            try:
+                date_obj = datetime.strptime(raw, fmt)
+                return date_obj.strftime("%m/%d/%Y")
+            except ValueError:
+                continue
+        print(f"Matched text-date pattern but failed to parse: {raw}")
+
+    return None
 
 
 def santitize_file_name(url:str) -> str:
@@ -33,7 +80,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
+def download_files(sb, file_url, script_directory,download_path,file_index, file_hash, xpath):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -60,7 +107,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
                     "file_url" : file_url,
-                    "file_size" : size_in_mb,
+                    "file_size" : f"{size_in_mb:.2f} MB",
                     "md5_hash" : file_hash,
                     "iconverted" : iconverted
                 }
@@ -71,23 +118,27 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
                 "file_name" : os.path.basename(file_path),
                 "sanitized_file_name" : os.path.basename(file_path),
                 "file_url" : file_url,
-                "file_size" : mb_size,
+                "file_size" : f"{mb_size:.2f} MB",
                 "md5_hash" : file_hash,
                 "iconverted" : iconverted
             }
             file_index += 1 
 
-    #we take the current window handle id to return to this handle
-    #Here "main_window" is the main tab we open at the beginning of the scraping
-    main_window =  sb.driver.current_window_handle
-    # Seleniumbase automatically creates a directory named "downloaded_files" to keep the downloaded files
+    
+
+    
     downloaded_files_dir = os.path.join(script_directory, "downloaded_files")
     os.makedirs(downloaded_files_dir, exist_ok=True)
     before_files = set(os.listdir(downloaded_files_dir))
-    sb.execute_script("window.open(arguments[0], '_blank');",file_url)
-    sb.sleep(5)
-    sb.switch_to_window(sb.driver.window_handles[-1])
-    
+    #click on the xpath
+    parsed = urlparse(file_url)
+    if "drive.google.com" in parsed.netloc:
+        #Use gdown 
+        gdown.download(file_url,downloaded_files_dir,quiet=False)
+    else:
+        sb.execute_script("window.open(arguments[0],'_blank');",file_url)
+        sb.switch_window(sb.driver.window_handles[-1])
+        
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
     timeout = 180
@@ -98,7 +149,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     while time.time() < deadline:
         current_files = set(os.listdir(downloaded_files_dir))
         new_files = current_files - before_files
-        completed = [f for f in new_files if not f.lower().endswith(partial_exts)]
+        completed = [f for f in new_files if not f.lower().endswith(partial_exts) and not f.startswith(".")]
 
         if completed:
             completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)
@@ -113,29 +164,10 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
         time.sleep(poll_interval)
 
-    if actual_file_name is None:
-        print("Downloading failed")
-        try:
-            sb.assert_downloaded_file(actual_file_name,timeout=120, browser = False)
-        except Exception as e:
-            print(f"Downloading Failed with the following exception: {e}")
-
-            try:
-                sb.close()
-            except Exception as e:
-                pass
-            sb.switch_to_window(main_window)
-            return {}
 
     print(actual_file_name)
 
     #close the download tab and return to the main window
-    try:
-        sb.close()
-    except Exception as e:
-        pass
-
-    sb.switch_to_window(main_window)
 
     new_file_name = santitize_file_name(actual_file_name)
     print(new_file_name)

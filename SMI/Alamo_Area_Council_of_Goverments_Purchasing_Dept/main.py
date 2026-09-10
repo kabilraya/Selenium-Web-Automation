@@ -13,7 +13,7 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files,regex_date_filter
+from functions import download_files,regex_date_filter,is_direct_download
 from urllib.parse import urljoin, quote
 from datetime import datetime
 from model.smi_model import SMI
@@ -68,7 +68,7 @@ with SB (
     tree = html.fromstring(page_source)
     sb.sleep(3)
     
-    bid_nodes = tree.xpath("//div[normalize-space()='Current Year Solicitations'][@class='block']/following-sibling::div[1]/div/div/ul[contains(normalize-space(),'IFB-2027.01 - FMIS Serving Lines')]/preceding-sibling::ul")
+    bid_nodes = tree.xpath("//div[@class='entry-content']/div[3]/h2/preceding-sibling::div[.//a]")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -83,28 +83,44 @@ with SB (
         
         
         
-        bid_title = node.xpath("./li/p[./a]")[0].text_content().strip()
-        bid_no = bid_title.rsplit("–",1)[0].strip()
-        
-        
-        formatted_date = "Not Specified"
-        
+        bid_title = node.xpath(".//h3")[0].text_content().strip()
+        match = re.search(r'(RFA|RFP|RFQ|RFB|RFI)-([0-9]{2,4}(?:-[A-Za-z0-9]+)*)', bid_title)
 
-        print(f"Bid Title: {bid_title}\nBid No.:{bid_no}\nBid Due Date: {formatted_date}")  
+        bid_no = f"{match.group(1)}-{match.group(2)}" if match else bid_title.split(":",1)[-1][:25].strip()
+        
+        bid_due_date = node.xpath(".//p/strong[contains(text(), 'Proposals Due') or contains(text(), 'Response Deadline')]/following-sibling::text()[1]")[0].strip()
+        formatted_date = regex_date_filter(bid_due_date)
+        date_obj = None
+        if formatted_date:
+            try:
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+            except ValueError as e:
+                try:
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                except ValueError as e:
+                    print("Couldn't parse the date")
+                    continue
+        if date_obj and date_obj <= datetime.today().date():
+            continue
+
+        print(f"Bid Title: {bid_title}\nBid No.:{bid_no}\nBid Due Date: {formatted_date}")
         file_links = node.xpath(".//a")
         if not file_links:
             continue
         bid_details[node_idx] = {
-                        "bid_no": bid_no,
-                        "bid_title": bid_title,          
-                        "bid_due_date": formatted_date,        
-                        "agency_name": module_name,
-                        "files_info": {}
+            "bid_no": bid_no,
+            "bid_title": bid_title,          
+            "bid_due_date": formatted_date,        
+            "agency_name": module_name,
+            "files_info": {}
         }
-    
-        
-        for file_idx, file in enumerate(file_links, start = 1):
-            file_url = file.get("href","").strip()
+        for file_idx, file_link in enumerate(file_links,start = 1):
+            file_url = file_link.get("href","").strip()
+            file_url = urljoin("https://aacog.gov/",file_url)
+            if not is_direct_download(file_url):
+                print(f"{file_url} is not a direct download link... Skipping")
+                continue
+            file_url = quote(file_url,safe=":?&%/")
             download_name = file_url.split("/")[-1]
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
@@ -119,10 +135,8 @@ with SB (
             except Exception as e:
                 print(f"Session creation failed {e}")
                 continue
-            
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://www.lex4.org/",file_url)
-            file_url = quote(file_url, safe="/?%:&")
+            
             file = download_files(sb = sb,
                                   file_url=file_url,
                                   script_directory=script_directory,
@@ -130,7 +144,7 @@ with SB (
                                   file_index=new_file_index,
                                   file_hash=file_hash)
             bid_details[node_idx]["files_info"].update(file)
-
+            
     has_downloads = any(
         bid["files_info"]
         for key, bid in bid_details.items()

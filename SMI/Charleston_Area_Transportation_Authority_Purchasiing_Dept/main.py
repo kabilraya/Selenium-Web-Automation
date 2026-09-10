@@ -14,12 +14,17 @@ from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
 from functions import download_files, regex_date_filter
-from urllib.parse import urljoin
+from urllib.parse import urljoin,urlsplit
 from datetime import datetime
 from model.smi_model import SMI
 from kabil_utils.extract_and_insertion import extract_from_json_and_insert
+from kabil_utils.record_data_insertion import insert_into_record_db
+from kabil_utils.db_value_updater import update_value
+from kabil_utils.file_remover import delete_files_in_directory
 
 #make all the path 
+start_time = time.perf_counter()
+
 script_path = os.path.abspath(__file__)
 script_directory = os.path.dirname(script_path)
 env_path = os.path.join(script_directory,".env")
@@ -30,15 +35,14 @@ env_path = os.path.join(script_directory,".env")
     main_url,
     download_path,
     server_path,
-    database_url,
+    smi_data_url,
+    smi_record_url,
     region_name,
     endpoint_url,
     aws_access_key_id,
     aws_secret_access_key
 ] = get_env(env_path)
-
 download_path=os.path.join(script_directory, "download")
-
 with SB (
     uc = True,
     test = True,
@@ -54,6 +58,7 @@ with SB (
     sb.uc_open_with_reconnect(main_url)
     
     sb.uc_gui_click_captcha()
+    sb.switch_to_default_content()
     sb.sleep(3)
     # print(type(sb))
     # print(hasattr(sb, "uc_open_with_reconnect"))
@@ -62,8 +67,8 @@ with SB (
     tree = html.fromstring(page_source)
 
     
-    project_nodes = tree.xpath("//h2[normalize-space()='Project Information']/following::div[1]//details")
-
+    project_nodes = tree.xpath("//h3[contains(normalize-space(),'Open Solicitations')]/following-sibling::div[./h4]")
+    print(len(project_nodes))
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -74,36 +79,46 @@ with SB (
     }
 
     for node_idx, node in enumerate(project_nodes,start=1):
-        summary = node.xpath("./summary")[0]
+        
+        bid_title = node.xpath("./h4[1]")[0].text_content().strip()
+        bid_no = bid_title[:25].strip()
+        bid_due_date = node.xpath("./h4[contains(normalize-space(),'Bids Due:')]/following-sibling::p[1]")[0].text_content().strip()
+        formatted_date = regex_date_filter(bid_due_date)
+        date_obj = None
+        if formatted_date:
+            try:
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+            except ValueError as e:
+                try:
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                except ValueError as e:
+                    print("Couldn't parse the date")
+                    continue
 
-        id = str(summary.xpath("./text()[1]")[0].strip())
-        institution_name = summary.xpath("./text()[2]")[0].strip()
-        bid_title = summary.xpath("./text()[3]")[0].strip()
-
+        print(f"Bid Title: {bid_title} \nBid Number: {bid_no} \nBid Due Date: {formatted_date}")
         # to extract the file content
-
-        file_links = node.xpath(".//a")
+        
+        #Get all the links on that node
+        file_links = node.xpath(".//ul//a")
         if not file_links:
             continue
-
+        # If any one link is found we make a dictionary         
         bid_details[node_idx] = {
-        "bid_no": id,
+        "bid_no": bid_no,
         "bid_title": bid_title,          
-        "bid_due_date": "Not Specified",        
-        "agency_name": institution_name,
+        "bid_due_date": bid_due_date,        
+        "agency_name": module_name,
         "files_info": {}
     }
-        for file_idx, file_url in enumerate(file_links,start = 1):
-            file_title = file_url.text_content().strip()
-            url = file_url.get("href","").strip() 
-            if not url:
-                continue
 
-            download_name = url.split("/")[-1]
-            file_hash = generate_md5_hash(ecgain = ecgains, bidno = id, filename = download_name )
+        for file_idx, file in enumerate(file_links, start = 1):
+            file_url = file.get("href","").strip()
+            download_name = file_url.split("/")[-1]
+            print(download_name)
+            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
             #create a session of database to check for duplication of hash and kill the session immediately
             try:
-                session, _ = create_database_session(database_url=database_url)
+                session, _ = create_database_session(database_url=smi_data_url)
                 is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
                 session.close()
                 if is_duplicate_hash:
@@ -115,10 +130,9 @@ with SB (
             
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
 
-            url = urljoin("https://ardot.gov",url)
-
+            file_url = urljoin("https://ridecarta.com/",file_url)
             file = download_files(sb = sb,
-                                  file_url=url,
+                                  file_url=file_url,
                                   script_directory=script_directory,
                                   download_path=download_path,
                                   file_index=new_file_index,
@@ -134,21 +148,54 @@ with SB (
     if not has_downloads:
         print("No new files downloaded. Skipping JSON creation and database insertion.")
     else:
-        json_path = os.path.join(download_path, "projects.json")
+        json_path = os.path.join(script_directory, "projects.json")
 
         with open(json_path, "w", encoding="utf-8") as json_file:
+            
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
 
         bid_counts = extract_from_json_and_insert(
             json_path=json_path,
-            db_url=database_url,
+            db_url=smi_data_url,
             region_name=region_name,
             endpoint_url=endpoint_url,
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
         )
+        end_time = time.perf_counter()
+        total_execution_time = round((end_time - start_time) / 60)
+        total_bids = bid_counts["total_bid"]
+        total_new_bid = bid_counts["total_new_bid"]
+        total_new_bid_file = bid_counts["total_new_bid_file"]
+        print(f"Total bids: {total_bids}")
+        print(f"Total new bids: {total_new_bid}")
+        print(f"Total new bid files: {total_new_bid_file}")
+        print(f"Process took around {total_execution_time}")
 
-        print(bid_counts)
+        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+
+        session, _ = create_database_session(database_url=smi_record_url)
+        insert_into_record_db(
+            session = session,
+            ecgain=ecgains,
+            module_name=module_name.split(".")[0],
+            total_bid= total_bids,
+            total_new_bid=total_new_bid,
+            total_new_bid_files=total_new_bid_file,
+            timeelapsed=total_execution_time
+        )
+
+        update_value(
+                db_url=smi_record_url,
+                query="UPDATE tbl_smirecord SET baseURL = :baseURL_value, brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1","baseURL_value" : main_url},
+                condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                )
+        delete_files_in_directory(download_path)
+
+        print("Scraping Successful")
+
+    
 

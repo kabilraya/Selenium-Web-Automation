@@ -13,20 +13,40 @@ from kabil_utils.iconverter import get_iconverted_value
 
 
 def regex_date_filter(raw_due_date: str) -> str | None:
-    try:
-        match = re.search(
-            r'(\d{1,2}/\d{1,2}/\d{4})',
-            raw_due_date
-        )
-
-        if match:
-            return match.group(1)
-
+    """
+    Extracts a date from text in either of these forms:
+      - '9/09/2026' or '09/9/2026'      (numeric mm/dd/yyyy)
+      - 'September 9, 2026'             (Month dd, yyyy)
+    Returns a normalized 'mm/dd/yyyy' string, or None if nothing matched.
+    """
+    if not raw_due_date:
         return None
 
-    except Exception as e:
-        print(f"Error during parsing the date: {e}")
-        return None
+    
+    numeric_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', raw_due_date)
+    if numeric_match:
+        try:
+            date_obj = datetime.strptime(numeric_match.group(1), "%m/%d/%Y")
+            return date_obj.strftime("%m/%d/%Y")
+        except ValueError as e:
+            print(f"Matched numeric pattern but failed to parse: {e}")
+
+    
+    text_match = re.search(
+        r'([A-Za-z]+\s+\d{1,2},?\s+\d{4})',
+        raw_due_date
+    )
+    if text_match:
+        raw = text_match.group(1).replace(",", "")
+        for fmt in ("%B %d %Y", "%b %d %Y"):
+            try:
+                date_obj = datetime.strptime(raw, fmt)
+                return date_obj.strftime("%m/%d/%Y")
+            except ValueError:
+                continue
+        print(f"Matched text-date pattern but failed to parse: {raw}")
+
+    return None
 
 
 def santitize_file_name(url:str) -> str:
