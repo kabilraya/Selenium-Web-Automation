@@ -69,7 +69,7 @@ with SB (
     tree = html.fromstring(page_source)
 
     
-    project_nodes = tree.xpath("//div[@class='views-row' and contains(normalize-space(),'PH HSE6 QMAC & Department of Surgery Lab')]/preceding-sibling::div")
+    project_nodes = tree.xpath("//div[contains(@class,'view-filters')]/following-sibling::div/div")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -82,13 +82,27 @@ with SB (
 
     for node_idx, node in enumerate(project_nodes,start=1):
         
-        
-        bid_title = node.xpath(".//h4")[0].text_content().strip()
-        
-        bid_no = node.xpath("./div[2]/div/text()")[0].strip()
-        formatted_date = "Not Specified"
+        bid_due_date = node.xpath(".//div[@class='field__label' and contains(normalize-space(),'Due')]/following-sibling::div")[0].text_content().strip()
+        formatted_date = regex_date_filter(bid_due_date)
+        date_obj = None
+        if formatted_date:
+            try:
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+            except ValueError as e:
+                try:
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                except:
+                    print("Couldn't parse the date")
+                    continue
 
-        print(formatted_date)
+        if date_obj and date_obj <= datetime.today().date():
+            continue
+        bid_title = node.xpath(".//span[contains(@class,'heading-eyebrow')]")[0].text_content().strip()
+        bid_title = bid_title.rsplit("-",1)[0].strip()
+        bid_no = bid_title.split(":",1)[0].strip()
+        print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
+    
+    
         
         file_links = node.xpath(".//a")
         if not file_links:
@@ -118,7 +132,7 @@ with SB (
                 continue
             
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://realestate.ucsf.edu/",file_url)
+            file_url = urljoin("https://www.nycourts.gov/",file_url)
             file = download_files(sb = sb,
                                   file_url=file_url,
                                   script_directory=script_directory,

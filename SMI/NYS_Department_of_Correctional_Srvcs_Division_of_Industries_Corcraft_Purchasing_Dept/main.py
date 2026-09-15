@@ -62,14 +62,11 @@ with SB (
     
     sb.uc_gui_click_captcha()
     sb.sleep(3)
-    # print(type(sb))
-    # print(hasattr(sb, "uc_open_with_reconnect"))
     page_source = sb.get_page_source()
     time.sleep(10)
     tree = html.fromstring(page_source)
 
-    
-    project_nodes = tree.xpath("//div[@class='views-row' and contains(normalize-space(),'PH HSE6 QMAC & Department of Surgery Lab')]/preceding-sibling::div")
+    project_nodes = tree.xpath("//table[@class='table no-footer dataTable']/tbody/tr")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -80,32 +77,80 @@ with SB (
     "server_path" : server_path
     }
 
-    for node_idx, node in enumerate(project_nodes,start=1):
-        
-        
-        bid_title = node.xpath(".//h4")[0].text_content().strip()
-        
-        bid_no = node.xpath("./div[2]/div/text()")[0].strip()
-        formatted_date = "Not Specified"
+    # --- Pass 1: group rows into projects, carrying file links from attachment rows forward ---
+    grouped_projects = []
+    current_project = None
 
-        print(formatted_date)
-        
-        file_links = node.xpath(".//a")
+    for node in project_nodes:
+        tds = node.xpath("./td")
+        if len(tds) < 3:
+            continue
+
+        due_date_text = tds[2].xpath("string(.)").strip()
+        row_links = node.xpath(".//a")
+
+        if due_date_text:
+            # New bid row -> flush the previous one and start fresh
+            if current_project:
+                grouped_projects.append(current_project)
+
+            desc_text = tds[0].xpath("string(.)").strip()
+            current_project = {
+                "bid_title": desc_text,
+                "issue_date": tds[1].xpath("string(.)").strip(),
+                "bid_due_date": due_date_text,
+                "file_links": list(row_links),
+            }
+        else:
+            # Attachment/related-doc row -> belongs to the most recent bid row
+            if current_project is not None:
+                current_project["file_links"].extend(row_links)
+
+    if current_project:
+        grouped_projects.append(current_project)
+
+    
+    for node_idx, project in enumerate(grouped_projects, start=1):
+
+        formatted_date = regex_date_filter(project["bid_due_date"])
+        date_obj = None
+        if formatted_date:
+            try:
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+            except ValueError as e:
+                try:
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                except:
+                    print("Couldn't parse the date")
+                    continue
+
+        if date_obj and date_obj <= datetime.today().date():
+            continue
+
+        bid_title = project["bid_title"]
+        # e.g. "IFB BA-2026-01 Partial Discharge Testing" -> split number vs title
+        m = re.match(r"^([A-Za-z]+\s+[A-Za-z0-9\-]+)\s+(.*)$", bid_title)
+        bid_no = m.group(1).strip() if m else bid_title[:25]
+
+        print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
+
+        file_links = project["file_links"]
         if not file_links:
             continue
+
         bid_details[node_idx] = {
             "bid_no": bid_no,
-            "bid_title": bid_title,          
-            "bid_due_date": formatted_date,        
+            "bid_title": bid_title,
+            "bid_due_date": formatted_date,
             "agency_name": module_name,
             "files_info": {}
         }
-        for file_idx, file in enumerate(file_links, start = 1):
-            file_url = file.get("href","").strip()
+
+        for file_idx, file_link in enumerate(file_links, start = 1):
+            file_url = file_link.get("href","").strip()
             download_name = file_url.split("/")[-1]
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
-            # create a session of database to check for duplication of hash and kill the session immediately
             try:
                 session, _ = create_database_session(database_url=smi_data_url)
                 is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
@@ -116,10 +161,11 @@ with SB (
             except Exception as e:
                 print(f"Session creation failed {e}")
                 continue
-            
+
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://realestate.ucsf.edu/",file_url)
+            file_url = urljoin("https://doccs.ny.gov/", file_url)
             file = download_files(sb = sb,
+                                  
                                   file_url=file_url,
                                   script_directory=script_directory,
                                   download_path=download_path,
@@ -132,14 +178,13 @@ with SB (
         for key, bid in bid_details.items()
         if isinstance(key, int)
         )
-    
+
     if not has_downloads:
         print("No new files downloaded. Skipping JSON creation and database insertion.")
     else:
         json_path = os.path.join(script_directory, "projects.json")
 
         with open(json_path, "w", encoding="utf-8") as json_file:
-            
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
@@ -162,8 +207,6 @@ with SB (
         print(f"Total new bid files: {total_new_bid_file}")
         print(f"Process took around {total_execution_time}")
 
-        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
-
         session, _ = create_database_session(database_url=smi_record_url)
         insert_into_record_db(
             session = session,
@@ -182,8 +225,5 @@ with SB (
                     condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
                     )
         delete_files_in_directory(download_path)
-    
+
         print("Scraping Successful")
-
-    
-

@@ -69,7 +69,7 @@ with SB (
     tree = html.fromstring(page_source)
 
     
-    project_nodes = tree.xpath("//div[@class='views-row' and contains(normalize-space(),'PH HSE6 QMAC & Department of Surgery Lab')]/preceding-sibling::div")
+    project_nodes = tree.xpath("//h3[contains(normalize-space(),'Current Bids')]/ancestor::div[contains(@class,'elementor-widget-heading')][1]/following-sibling::div[contains(@class,'elementor-widget-text-editor')][1]//ul/li")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -83,14 +83,16 @@ with SB (
     for node_idx, node in enumerate(project_nodes,start=1):
         
         
-        bid_title = node.xpath(".//h4")[0].text_content().strip()
         
-        bid_no = node.xpath("./div[2]/div/text()")[0].strip()
+        bid_title = node.xpath("./a")[0].text_content().strip()
+        
+        bid_no = bid_title[:25].strip()
         formatted_date = "Not Specified"
-
-        print(formatted_date)
+        print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
+    
+    
         
-        file_links = node.xpath(".//a")
+        file_links = node.xpath("./a")
         if not file_links:
             continue
         bid_details[node_idx] = {
@@ -118,7 +120,7 @@ with SB (
                 continue
             
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://realestate.ucsf.edu/",file_url)
+            file_url = urljoin("https://www.octech.edu/",file_url)
             file = download_files(sb = sb,
                                   file_url=file_url,
                                   script_directory=script_directory,
