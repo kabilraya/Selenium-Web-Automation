@@ -14,7 +14,7 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files, regex_date_filter
+from functions import download_files, regex_date_filter, is_downloadable_file
 from urllib.parse import urljoin,urlsplit
 from datetime import datetime
 from model.smi_model import SMI
@@ -62,13 +62,17 @@ with SB (
     
     sb.uc_gui_click_captcha()
     sb.sleep(3)
+    sb.switch_to_default_content()
+    sb.sleep(5)
+    # print(type(sb))
+    # print(hasattr(sb, "uc_open_with_reconnect"))
     page_source = sb.get_page_source()
-    time.sleep(10)
+    time.sleep(5)
     tree = html.fromstring(page_source)
 
-    project_nodes = tree.xpath("//div[@class='components']/div[contains(@class,'content-grid')]//div[@class='content-grid__item']")
     
-    print(len(project_nodes))
+    project_nodes = tree.xpath("//table[@summary='Current Open Contract Opportunities']/tbody/tr")
+
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -78,14 +82,15 @@ with SB (
     "server_path" : server_path
     }
 
-    
-
-    
-    for node_idx, node in enumerate(project_nodes, start=1):
-        bid_title = node.xpath(".//a")[0].text_content().strip()
+    for node_idx, node in enumerate(project_nodes,start=1):
+        
+        
+        
+        bid_title = node.xpath("(.//a)[1]")[0].text_content().strip()
+        
         bid_no = bid_title[:25].strip()
-        bid_due_date = node.xpath(".//time")[0].text_content().strip()
-
+        bid_due_date = node.xpath("./td[4]")[0].text_content().strip()
+        bid_due_date = bid_due_date.split(",",1)[-1].strip()
         formatted_date = regex_date_filter(bid_due_date)
         date_obj = None
         if formatted_date:
@@ -94,71 +99,50 @@ with SB (
             except ValueError as e:
                 try:
                     date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
-                except:
+                except ValueError as e:
                     print("Couldn't parse the date")
                     continue
-
         if date_obj and date_obj <= datetime.today().date():
             continue
-
-        
-
         print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
-        directed_url = node.xpath(".//a")[0].get("href","").strip()
-        directed_url = urljoin("https://edc.nyc/",directed_url)
-        sb.uc_open_with_reconnect(directed_url)
-        sb.sleep(5)
-        page_source = sb.get_page_source()
-        sb.sleep(2)
-        tree = html.fromstring(page_source)
-
-        
+    
+    
         
 
-        sb.hover_and_click(hover_selector="//span[contains(normalize-space(),'Download')]",click_selector="//span[contains(normalize-space(),'Download')]")
-        sb.sleep(2)
-        sb.type("//div[@class='form-toolkit']//input[@type='email']","Sarah.vine@mgbids.com")
-        sb.type("//div[@class='form-toolkit']//input[@type='text']","MGBids.com")
-        sb.hover_and_click(hover_selector="//div[@class='form-toolkit']//input[@type='submit']",click_selector="//div[@class='form-toolkit']//input[@type='submit']")
-        sb.sleep(4)
-        new_page_source = sb.get_page_source()
-        sb.sleep(2)
-        new_tree = html.fromstring(new_page_source)
-        file_links = new_tree.xpath("//ul[@class='list--unstyled']//a")
-        
-        print(len(file_links))
+        file_links = node.xpath("./td[position() != last()]//a")
+        if not file_links:
+            continue
         bid_details[node_idx] = {
             "bid_no": bid_no,
-            "bid_title": bid_title,
-            "bid_due_date": formatted_date,
+            "bid_title": bid_title,          
+            "bid_due_date": formatted_date,        
             "agency_name": module_name,
             "files_info": {}
         }
-
-        for file_idx, file_link in enumerate(file_links, start = 1):
-            file_url = file_link.get("href","").strip()
+        for file_idx, file in enumerate(file_links, start = 1):
+            file_url = file.get("href","").strip()
+            file_url = urljoin("https://portoflosangeles.org/",file_url)
+            if not is_downloadable_file(file_url):
+                print("Not a downloadable link")
+                continue
             download_name = file_url.split("/")[-1]
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+            # create a session of database to check for duplication of hash and kill the session immediately
             try:
-                
                 session, _ = create_database_session(database_url=smi_data_url)
-                
-                print(f"{file_hash} is being checked....")
                 is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
                 session.close()
-                print("Session Closed")
                 if is_duplicate_hash:
                     print("Hash Duplication found")
                     continue
             except Exception as e:
                 print(f"Session creation failed {e}")
                 continue
-
+            
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://edc.nyc/", file_url)
+            
             file = download_files(sb = sb,
-                                  
                                   file_url=file_url,
                                   script_directory=script_directory,
                                   download_path=download_path,
@@ -171,13 +155,14 @@ with SB (
         for key, bid in bid_details.items()
         if isinstance(key, int)
         )
-
+    
     if not has_downloads:
         print("No new files downloaded. Skipping JSON creation and database insertion.")
     else:
         json_path = os.path.join(script_directory, "projects.json")
 
         with open(json_path, "w", encoding="utf-8") as json_file:
+            
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
@@ -200,6 +185,8 @@ with SB (
         print(f"Total new bid files: {total_new_bid_file}")
         print(f"Process took around {total_execution_time}")
 
+        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+
         session, _ = create_database_session(database_url=smi_record_url)
         insert_into_record_db(
             session = session,
@@ -218,5 +205,8 @@ with SB (
                     condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
                     )
         delete_files_in_directory(download_path)
-
+    
         print("Scraping Successful")
+
+    
+
