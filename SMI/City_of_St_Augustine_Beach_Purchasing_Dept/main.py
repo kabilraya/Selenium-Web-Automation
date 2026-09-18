@@ -118,7 +118,7 @@ with SB (
         }
         for directed_link in directed_links:
             directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://www.aikencountysc.gov/",directed_url)
+            directed_url = urljoin("https://www.staugbch.com/",directed_url)
             sb.uc_open_with_reconnect(directed_url)
             sb.sleep(3)
             sb.uc_gui_click_captcha()
@@ -133,7 +133,7 @@ with SB (
             os.makedirs(download_path, exist_ok=True)
 
             notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
-            info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details'] | //table[@role='presentation' and contains(@style,'background-color')]"
+            info_table = "//table[@role='presentation' and contains(@style,'border-top')] | //table[@role='presentation' and contains(@style,'background-color')]"
             
             
             is_duplicate_hash = False
@@ -152,7 +152,7 @@ with SB (
                             xpath=info_table,
                             tree=tree,
                             output_path=notice_path,                               
-                            base_url="https://www.aikencountysc.gov/",
+                            base_url="https://www.staugbch.com/",
                 )
     
                 if os.path.exists(notice_path):
@@ -176,7 +176,7 @@ with SB (
             
             for file_idx, file_link in enumerate(file_links, start = 1):
                 file_url = file_link.get("href","").strip()
-                file_url = urljoin("https://www.aikencountysc.gov/",file_url)
+                file_url = urljoin("https://www.staugbch.com/",file_url)
                 file_url = quote(file_url,safe="/:?&=#%")
                 if not is_downloadable_file(file_url):
                     print("Not a downloadable link so skipping it")

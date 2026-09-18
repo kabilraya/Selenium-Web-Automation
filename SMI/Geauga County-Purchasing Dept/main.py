@@ -108,7 +108,7 @@ with SB (
         print(formatted_date)
         print(f"Bid Title: {bid_title}\nBid No.:{bid_no}")
         
-        file_links = node.xpath(".//a")
+        file_links = node.xpath("./td[4]/a[contains(@href,'pdf')]")
         if not file_links:
             continue
     
@@ -119,8 +119,8 @@ with SB (
                 "agency_name": module_name,
                 "files_info": {}
             }
-        for file_idx, file in enumerate(file_links, start = 1):
-            file_url = file.get("href","").strip()
+        for file_idx, file_link in enumerate(file_links, start = 1):
+            file_url = file_link.get("href","").strip()
             if not file_url:
                 print("href was not found.. skipping")
                 continue
