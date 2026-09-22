@@ -10,54 +10,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
-import requests
-from seleniumbase import SB
-from selenium.webdriver.support.ui import Select
 
-
-def form_filling(sb:SB):
-    sb.type("//label[contains(normalize-space(),'Name')]/following-sibling::input","John Doe")
-    sb.type("//label[contains(normalize-space(),'Company')]/following-sibling::input","Prime Vendor")
-    sb.type("//label[contains(normalize-space(),'Address')]/following-sibling::input","NY")
-    sb.type("//label[contains(normalize-space(),'City/Town')]/following-sibling::input","NY")
-    sb.type("//label[contains(normalize-space(),'ZIP/Postal Code')]/following-sibling::input","45645")
-    sb.type("//label[contains(normalize-space(),'Country')]/following-sibling::input","US")
-    sb.type("//label[contains(normalize-space(),'Email Address')]/following-sibling::input","johndoe@gmail.com")
-    sb.type("//label[contains(normalize-space(),'Phone Number')]/following-sibling::input","2026754")
-    select_element = sb.get_element(
-    "//label[contains(normalize-space(),'State/Province')]/following::select",
-    by="xpath"
-    )
-    Select(select_element).select_by_visible_text("NJ New Jersey")
-    sb.hover_and_click(hover_selector="//button[normalize-space()='Next']",click_selector="//button[normalize-space()='Next']")
-    sb.sleep(5)
-
-
-def is_direct_download(url, session=None):
-    req = session or requests
-    try:
-        resp = req.head(url, allow_redirects=True, timeout=10)
-
-        # some servers don't implement HEAD properly — fall back to GET
-        if resp.status_code >= 400 or not resp.headers.get('Content-Type'):
-            resp = req.get(url, stream=True, timeout=10)
-            resp.close()
-
-        content_type = resp.headers.get('Content-Type', '').lower()
-        content_disposition = resp.headers.get('Content-Disposition', '').lower()
-
-        if 'attachment' in content_disposition:
-            return True   
-        if content_type and 'text/html' not in content_type:
-            return True   
-
-        return False  
-
-    except requests.RequestException:
-        return False
-
-import re
-from datetime import datetime
 
 def regex_date_filter(raw_due_date: str) -> str | None:
     """
@@ -102,7 +55,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb:SB, file_url, script_directory,download_path,file_index, file_hash):
+def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -154,10 +107,12 @@ def download_files(sb:SB, file_url, script_directory,download_path,file_index, f
     os.makedirs(downloaded_files_dir, exist_ok=True)
     before_files = set(os.listdir(downloaded_files_dir))
     sb.execute_script("window.open(arguments[0], '_blank');",file_url)
+    sb.sleep(5)
     sb.switch_to_window(sb.driver.window_handles[-1])
+
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
-    timeout = 360
+    timeout = 180
     poll_interval = 0.5
     deadline = time.time() + timeout
     actual_file_name = None
@@ -165,10 +120,7 @@ def download_files(sb:SB, file_url, script_directory,download_path,file_index, f
     while time.time() < deadline:
         current_files = set(os.listdir(downloaded_files_dir))
         new_files = current_files - before_files
-        completed = [
-            f for f in new_files
-            if not f.lower().endswith(partial_exts) and not f.startswith(".")
-        ]
+        completed = [f for f in new_files if not f.lower().endswith(partial_exts)]
 
         if completed:
             completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)
@@ -183,6 +135,19 @@ def download_files(sb:SB, file_url, script_directory,download_path,file_index, f
 
         time.sleep(poll_interval)
 
+    if actual_file_name is None:
+        print("Downloading failed")
+        try:
+            sb.assert_downloaded_file(actual_file_name,timeout=120, browser = False)
+        except Exception as e:
+            print(f"Downloading Failed with the following exception: {e}")
+
+            try:
+                sb.close()
+            except Exception as e:
+                pass
+            sb.switch_to_window(main_window)
+            return {}
 
     print(actual_file_name)
 

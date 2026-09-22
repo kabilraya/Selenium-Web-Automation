@@ -1,7 +1,24 @@
 import os
 import tempfile
+import logging
+import pikepdf
 
 from pypdf import PdfReader, PdfWriter
+
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+
+
+def repair_pdf(file_path: str) -> str:
+    """Rebuilds a corrupted PDF's xref table using pikepdf/qpdf, in place."""
+    try:
+        with pikepdf.open(file_path) as pdf:
+            pdf.save(file_path + ".repaired")
+        os.replace(file_path + ".repaired", file_path)
+        print(f"Repaired: {file_path}")
+    except Exception as e:
+        print(f"Repair failed, continuing with original file: {e}")
+    return file_path
+
 
 
 def convert_to_mb(size_bytes):
@@ -34,7 +51,7 @@ def split_pdf(file_path: str, max_size_mb: int = 50, max_chunks: int = 10) -> li
     download_path = os.path.dirname(file_path)
     file_name = os.path.basename(file_path)
     file_name_without_ext = os.path.splitext(file_name)[0]
-
+    file_path = repair_pdf(file_path)
     original_size_bytes = os.path.getsize(file_path)
     original_size_mb = convert_to_mb(original_size_bytes)
 
