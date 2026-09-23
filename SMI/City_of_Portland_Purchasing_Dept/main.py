@@ -71,7 +71,7 @@ with SB (
     tree = html.fromstring(page_source)
     sb.sleep(3)
     
-    bid_nodes = tree.xpath("//tr[contains(normalize-space(),'09/03/2026 2:00 PM')]/preceding-sibling::tr")
+    bid_nodes = tree.xpath("//div[@class='view-content'][.//h2[@class='h4']]/div")
     print(len(bid_nodes))
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -83,11 +83,11 @@ with SB (
     }
     
     for node_idx, node in enumerate(bid_nodes,start=1): 
-        bid_title = node.xpath("./td[2]/a")[0].text_content().strip()
+        bid_title = node.xpath(".//h2//span")[0].text_content().strip()
         
-        bid_no = node.xpath("./td[1]")[0].text_content().strip()
+        bid_no = bid_title[:25].strip()
         
-        bid_due_date = node.xpath("./td[4]")[0].text_content().strip()
+        bid_due_date = node.xpath("./div/div/div[1]/span/time[2]")[0].text_content().strip()
         
         formatted_date = regex_date_filter(bid_due_date)
 
@@ -115,21 +115,30 @@ with SB (
                         "agency_name": module_name,
                         "files_info": {}
                     }
-        directed_link = node.xpath("./td[2]/a")[0].get("href","").strip()
-        directed_link = urljoin("https://www.cityoforange.org/",directed_link)
+        directed_link = node.xpath(".//h2/a")[0].get("href","").strip()
+        directed_link = urljoin("https://www.portland.gov/",directed_link)
         sb.uc_open_with_reconnect(directed_link)
         sb.sleep(3)
         page_source = sb.get_page_source()
         sb.sleep(2)
         tree = html.fromstring(page_source)
 
-        file_links = tree.xpath("//div[@class='detail-content']//a")
-        print(len(file_links))
-        for file_idx, file_link in enumerate(file_links, start = 1):
-            file_url = file_link.get("href","").strip()
-            file_url = urljoin("https://www.cityoforange.org/",file_url)
-            download_name = file_url.split("/")[-1]
-            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+        direct_file_link = tree.xpath("//table/tbody/tr[1]/td/p[1]/a")[0].get("href","").strip()
+        direct_file_link = urljoin("https://www.portland.gov/",direct_file_link)
+        sb.uc_open_with_reconnect(direct_file_link)
+        sb.sleep(10)
+        new_page_source = sb.get_page_source()
+        sb.sleep(3)
+        new_tree = html.fromstring(new_page_source)
+        file_rows = new_tree.xpath("//section[contains(normalize-space(),'Attachments')][./div]/div[2]//table/tbody/tr")
+        print(len(file_rows))
+        for file_idx, file_row in enumerate(file_rows, start = 1):
+            file_name = file_row.xpath("./td[not(contains(@role,'none'))][1]/div/div[3]")[0].text_content().strip()
+            print(file_name)
+            
+            
+            
+            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = file_name )
             # create a session of database to check for duplication of hash and kill the session immediately
             try:
                 session, _ = create_database_session(database_url=smi_data_url)
@@ -141,10 +150,13 @@ with SB (
             except Exception as e:
                 print(f"Session creation failed {e}")
                 continue
+            #Get the download button of the particular row to click on it as no href for the file download
+            download_button = f"//section[contains(normalize-space(),'Attachments')][./div]/div[2]//table/tbody/tr[{file_idx}]/td[not(contains(@role,'none'))][3]//button"
+
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
             
             file = download_files(sb = sb,
-                                  file_url=file_url, 
+                                  file_url=download_button, 
                                   script_directory=script_directory,
                                   download_path=download_path,
                                   file_index=new_file_index,
