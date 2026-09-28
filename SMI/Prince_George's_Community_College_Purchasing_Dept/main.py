@@ -13,7 +13,7 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files, regex_date_filter, save_nodes_as_pdf,is_downloadable_file
+from functions import download_files, regex_date_filter, is_downloadable_file
 from urllib.parse import urljoin,quote
 from datetime import datetime
 from model.smi_model import SMI
@@ -21,7 +21,7 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+import re
 #make all the path 
 start_time = time.perf_counter()
 
@@ -63,11 +63,11 @@ with SB (
     sb.sleep(3)
     sb.switch_to_default_content()
 
-
+    sb.sleep(4)
     page_source = sb.get_page_source()
     time.sleep(3)
     tree = html.fromstring(page_source)
-    project_nodes = tree.xpath("//div[@class='bid']")
+    project_nodes = tree.xpath("//div[contains(normalize-space(),'Requests for Bids') and @class='general']/following-sibling::div[.//h3]")
     
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -77,9 +77,16 @@ with SB (
     "download_path" : download_path,
     "server_path" : server_path
     }
-    seen_bid_no = set()
+    
     for node_idx, node in enumerate(project_nodes,start=1):
-        bid_due_date = node.xpath(".//p[contains(normalize-space(),'Bid Opening Date')]/following-sibling::p")[0].text_content().strip()
+        
+        bid_due_date = node.xpath(".//p[contains(normalize-space(),'Proposals Due') or contains(normalize-space(),'Bids Due')] | ./div/p[1]/text()[contains(normalize-space(),'Due Date')] | .//strong[contains(normalize-space(),'PROPOSAL DUE')]/following-sibling::text()")
+
+        try:
+            bid_due_date = bid_due_date[0].text_content().strip()
+        except:
+            bid_due_date = bid_due_date[0].strip()
+        print(bid_due_date)
         formatted_date = regex_date_filter(bid_due_date)
         date_obj = None
         if formatted_date:
@@ -93,21 +100,19 @@ with SB (
                     continue
         if date_obj and date_obj <= datetime.today().date():
             continue
+        bid_title = node.xpath(".//h3")[0].text_content().strip()
+        match = re.search(
+        r'(RFP|IFB|RFQ)\s*(?:No\.?\s*)?\d+(?:[-/.]\d+)*',
+        bid_title,
+        re.IGNORECASE
+        )
+        bid_no = match.group(0).strip() if match else bid_title[:25]
 
-        bid_title = node.xpath(".//h2")[0].text_content().strip()
         
-        
-        directed_link = node.xpath(".//a")
-        if not directed_link:
+        print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
+        file_links = node.xpath(".//a[not(contains(@href,'mailto:'))]")
+        if not file_links:
             continue
-        directed_link = directed_link[0].get("href","").strip()
-        directed_link = urljoin("https://maconwater.org/",directed_link)
-        sb.uc_open_with_reconnect(directed_link)
-        sb.sleep(5)
-        page_source = sb.get_page_source()
-        sb.sleep(2)
-        tree = html.fromstring(page_source)
-        bid_no = tree.xpath("//h5[contains(normalize-space(),'Bid #')]/span")[0].text_content().strip()
         bid_details[node_idx] = {
             "bid_no": bid_no,
             "bid_title": bid_title,          
@@ -116,52 +121,16 @@ with SB (
             "files_info": {}
         }
         
-        notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
-        notice_path = os.path.join(download_path, notice_filename)
-        os.makedirs(download_path, exist_ok=True)
-        notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
-        info_table = "//div[@class='content-column']"
         
         
-        is_duplicate_hash = False
-        try:
-            session, _ = create_database_session(database_url=smi_data_url)
-            is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
-            session.close()
-        except Exception as e:
-            print(f"Session creation failed {e}")
-        if is_duplicate_hash:
-            print("Hash Duplication found for notice PDF")
-        else:
-            save_nodes_as_pdf(
-                                                     
-                        xpath=info_table,
-                        tree=tree,
-                        output_path=notice_path,                               
-                        base_url="https://maconwater.org/",
-            )
-
-            if os.path.exists(notice_path):
-                mb_size = os.path.getsize(notice_path) / (1024 * 1024)
-                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                bid_details[node_idx]["files_info"][new_file_index] = {
-                    "file_name": notice_filename,
-                    "sanitized_file_name": notice_filename,
-                    "file_url": directed_link,
-                    "file_size": f"{mb_size:.5f} MB",
-                    "md5_hash": notice_hash,
-                    "iconverted": 0
-                }
-            else:
-                print("Notice PDF was not created — no tables matched, skipping dictionary update")
-        file_links = tree.xpath("//div[@class='content-column']//ul[contains(@class,'blue-links')]//a[not(normalize-space(@href)='')]")
+        
         print(len(file_links))
         if not file_links:
             continue
         
         for file_idx, file_link in enumerate(file_links, start = 1):
             file_url = file_link.get("href","").strip()
-            file_url = urljoin("https://maconwater.org/",file_url)
+            file_url = urljoin("https://www.pgcc.edu/",file_url)
             file_url = quote(file_url,safe="/:?&=#%")
             
             download_name = file_url.split("/")[-1]

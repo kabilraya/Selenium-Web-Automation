@@ -54,7 +54,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
+def download_files(sb, download_button, script_directory,download_path,file_index, file_hash):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -80,7 +80,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
                 file[file_index] = {
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
-                    "file_url" : file_url,
+                    "file_url" : file_name,
                     "file_size" : f"{size_in_mb:.2f} MB",
                     "md5_hash" : file_hash,
                     "iconverted" : iconverted
@@ -91,7 +91,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
             file[file_index] = {
                 "file_name" : os.path.basename(file_path),
                 "sanitized_file_name" : os.path.basename(file_path),
-                "file_url" : file_url,
+                "file_url" : os.path.basename(file_path),
                 "file_size" : f"{mb_size:.2f} MB",
                 "md5_hash" : file_hash,
                 "iconverted" : iconverted
@@ -100,15 +100,13 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
     #we take the current window handle id to return to this handle
     #Here "main_window" is the main tab we open at the beginning of the scraping
-    main_window =  sb.driver.current_window_handle
+    
     # Seleniumbase automatically creates a directory named "downloaded_files" to keep the downloaded files
     downloaded_files_dir = os.path.join(script_directory, "downloaded_files")
     os.makedirs(downloaded_files_dir, exist_ok=True)
     before_files = set(os.listdir(downloaded_files_dir))
-    sb.execute_script("window.open(arguments[0], '_blank');",file_url)
-    sb.sleep(5)
-    sb.switch_to_window(sb.driver.window_handles[-1])
-
+    
+    sb.hover_and_click(hover_selector = download_button, click_selector = download_button)
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
     timeout = 180
@@ -144,25 +142,11 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
         except Exception as e:
             print(f"Downloading Failed with the following exception: {e}")
 
-            try:
-                sb.close()
-            except Exception as e:
-                pass
-            sb.switch_to_window(main_window)
-            return {}
+            
 
     print(actual_file_name)
 
-    #close the download tab and return to the main window
-    try:
-        if len(sb.driver.window_handles) > 1:
-            sb.switch_to_window(sb.driver.window_handles[-1])
-            sb.driver.close()
-            sb.switch_to_window(main_window)
-    except Exception as e:
-        pass
-
-    sb.switch_to_window(main_window)
+    
 
     new_file_name = santitize_file_name(actual_file_name)
     print(new_file_name)

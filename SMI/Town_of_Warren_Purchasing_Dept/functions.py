@@ -33,11 +33,11 @@ def regex_date_filter(raw_due_date: str) -> str | None:
 
     
     text_match = re.search(
-    r'([A-Za-z]+\s+\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})',
-    raw_due_date
+        r'([A-Za-z]+\s+\d{1,2},?\s+\d{4})',
+        raw_due_date
     )
     if text_match:
-        raw = f"{text_match.group(1)} {text_match.group(2)}"
+        raw = text_match.group(1).replace(",", "")
         for fmt in ("%B %d %Y", "%b %d %Y"):
             try:
                 date_obj = datetime.strptime(raw, fmt)
@@ -45,6 +45,7 @@ def regex_date_filter(raw_due_date: str) -> str | None:
             except ValueError:
                 continue
         print(f"Matched text-date pattern but failed to parse: {raw}")
+
     return None
 
 
@@ -119,10 +120,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     while time.time() < deadline:
         current_files = set(os.listdir(downloaded_files_dir))
         new_files = current_files - before_files
-        completed = [
-                            f for f in new_files
-                            if not f.lower().endswith(partial_exts) and not f.startswith(".")
-                        ]
+        completed = [f for f in new_files if not f.lower().endswith(partial_exts)]
 
         if completed:
             completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)
@@ -155,10 +153,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
     #close the download tab and return to the main window
     try:
-        if len(sb.driver.window_handles) > 1:
-            sb.switch_to_window(sb.driver.window_handles[-1])
-            sb.driver.close()
-            sb.switch_to_window(main_window)
+        sb.close()
     except Exception as e:
         pass
 

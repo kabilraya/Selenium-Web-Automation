@@ -10,6 +10,8 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
+import requests
+
 
 
 def regex_date_filter(raw_due_date: str) -> str | None:
@@ -155,10 +157,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
     #close the download tab and return to the main window
     try:
-        if len(sb.driver.window_handles) > 1:
-            sb.switch_to_window(sb.driver.window_handles[-1])
-            sb.driver.close()
-            sb.switch_to_window(main_window)
+        sb.close()
     except Exception as e:
         pass
 

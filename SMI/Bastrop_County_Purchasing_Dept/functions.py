@@ -11,6 +11,48 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
 
+import requests
+def is_downloadable_file(url, sb=None, debug=False):
+    try:
+        session = requests.Session()
+        headers = {"Accept": "application/pdf,text/html,*/*"}
+
+        if sb is not None:
+            headers["User-Agent"] = sb.execute_script("return navigator.userAgent;")
+            headers["Referer"] = sb.get_current_url()
+            for c in sb.driver.get_cookies():
+                session.cookies.set(c["name"], c["value"], domain=c.get("domain"))
+        else:
+            headers["User-Agent"] = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+
+        # (connect_timeout, read_timeout) — bounds a stalled/trickling response too
+        resp = session.get(url, headers=headers, stream=True, timeout=(5, 10), allow_redirects=True)
+        content_type = resp.headers.get('Content-Type', '').lower()
+        content_disposition = resp.headers.get('Content-Disposition', '').lower()
+
+        if debug:
+            print(f"URL: {url} -> {resp.url} [{resp.status_code}] ct={content_type!r} cd={content_disposition!r}")
+
+        resp.close()
+
+        if content_disposition.split(';')[0].strip() == 'attachment':
+            return True
+        if any(content_type.startswith(t) for t in ('text/plain', 'text/html', 'image/', 'text/xml')):
+            return False
+        return True
+
+    except requests.RequestException as e:
+        if debug:
+            print(f"  -> request failed: {e}")
+        return False
+
+
+
+import re
+from datetime import datetime
 
 def regex_date_filter(raw_due_date: str) -> str | None:
     """
@@ -33,11 +75,11 @@ def regex_date_filter(raw_due_date: str) -> str | None:
 
     
     text_match = re.search(
-    r'([A-Za-z]+\s+\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})',
-    raw_due_date
+        r'([A-Za-z]+\s+\d{1,2},?\s+\d{4})',
+        raw_due_date
     )
     if text_match:
-        raw = f"{text_match.group(1)} {text_match.group(2)}"
+        raw = text_match.group(1).replace(",", "")
         for fmt in ("%B %d %Y", "%b %d %Y"):
             try:
                 date_obj = datetime.strptime(raw, fmt)
@@ -45,7 +87,9 @@ def regex_date_filter(raw_due_date: str) -> str | None:
             except ValueError:
                 continue
         print(f"Matched text-date pattern but failed to parse: {raw}")
+
     return None
+
 
 
 def santitize_file_name(url:str) -> str:
@@ -111,7 +155,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
-    timeout = 180
+    timeout = 300
     poll_interval = 0.5
     deadline = time.time() + timeout
     actual_file_name = None
@@ -119,10 +163,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     while time.time() < deadline:
         current_files = set(os.listdir(downloaded_files_dir))
         new_files = current_files - before_files
-        completed = [
-                            f for f in new_files
-                            if not f.lower().endswith(partial_exts) and not f.startswith(".")
-                        ]
+        completed = [f for f in new_files if not f.lower().endswith(partial_exts)]
 
         if completed:
             completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)
@@ -155,10 +196,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
     #close the download tab and return to the main window
     try:
-        if len(sb.driver.window_handles) > 1:
-            sb.switch_to_window(sb.driver.window_handles[-1])
-            sb.driver.close()
-            sb.switch_to_window(main_window)
+        sb.close()
     except Exception as e:
         pass
 
