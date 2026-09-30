@@ -21,7 +21,7 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-import re
+
 #make all the path 
 start_time = time.perf_counter()
 
@@ -44,11 +44,6 @@ env_path = os.path.join(script_directory,".env")
 ] = get_env(env_path)
 
 download_path=os.path.join(script_directory, "download")
-def safe_filename(text: str, max_len: int = 100) -> str:
-    text = re.sub(r'[\\/:*?"<>|#]', '_', text)   
-    text = re.sub(r'\s+', '_', text.strip())       
-    text = re.sub(r'_+', '_', text)                
-    return text[:max_len].strip('_.')
 
 with SB (
     uc = True,
@@ -90,7 +85,7 @@ with SB (
             continue
 
         bid_title = node.xpath("./div[1]/span[1]")[0].text_content().strip()
-        bid_no = node.xpath("./div[1]/span[2]/text()")[0].strip()
+        bid_no = bid_title[:25].strip()
 
         if bid_no in seen_bid_no:
             print(f"\n\n{bid_no} is repeated so skipping this\n\n")
@@ -123,7 +118,7 @@ with SB (
         }
         for directed_link in directed_links:
             directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://www.abilenetx.gov/",directed_url)
+            directed_url = urljoin("https://www.falmouthme.org/",directed_url)
             sb.uc_open_with_reconnect(directed_url)
             sb.sleep(3)
             sb.uc_gui_click_captcha()
@@ -133,7 +128,7 @@ with SB (
             page_source = sb.get_page_source()
             sb.sleep(2)
             tree = html.fromstring(page_source)
-            notice_filename = f"{safe_filename(bid_title)}_bid_notice.pdf"
+            notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
             notice_path = os.path.join(download_path, notice_filename)
             os.makedirs(download_path, exist_ok=True)
 
@@ -157,7 +152,7 @@ with SB (
                             xpath=info_table,
                             tree=tree,
                             output_path=notice_path,                               
-                            base_url="https://www.abilenetx.gov/",
+                            base_url="https://www.falmouthme.org/",
                 )
     
                 if os.path.exists(notice_path):
@@ -181,7 +176,7 @@ with SB (
             
             for file_idx, file_link in enumerate(file_links, start = 1):
                 file_url = file_link.get("href","").strip()
-                file_url = urljoin("https://www.abilenetx.gov/",file_url)
+                file_url = urljoin("https://www.falmouthme.org/",file_url)
                 file_url = quote(file_url,safe="/:?&=#%")
                 if not is_downloadable_file(file_url):
                     print("Not a downloadable link so skipping it")
