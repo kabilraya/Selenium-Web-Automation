@@ -68,8 +68,8 @@ with SB (
     page_source = sb.get_page_source()
     time.sleep(3)
     tree = html.fromstring(page_source)
-    project_nodes = tree.xpath("//table[@class='rpfbids']/tbody/tr[position()>1]//table/tbody/tr")
-    
+    project_nodes = tree.xpath("//div[@href and .//h5[contains(normalize-space(),'Missoula County TIF Economic Analysis RFQ')]]/preceding-sibling::div")
+    print(len(project_nodes))
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -80,28 +80,33 @@ with SB (
     }
     
     for node_idx, node in enumerate(project_nodes,start=1):
+        due_date_element_check = node.xpath("./small")
+        if not due_date_element_check:
+            formatted_date = "Not Specified"
+        else:
+            bid_due_date = node.xpath("./small/span[2]/following-sibling::text()")[0].strip()
+            bid_due_date = bid_due_date.split("through",1)[-1].strip()
         
-        bid_due_date = node.xpath("./td[3]")[0].text_content().strip()
-
-        
-        formatted_date = regex_date_filter(bid_due_date)
-        date_obj = None
-        if formatted_date:
-            try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
-            except ValueError as e:
+            formatted_date = regex_date_filter(bid_due_date)
+            date_obj = None
+            if formatted_date:
                 try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
                 except ValueError as e:
-                    print(f"Date cannot be parsed with error {e}")
-                    continue
-        if date_obj and date_obj <= datetime.today().date():
-            continue
+                    try:
+                        date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                    except ValueError as e:
+                        print(f"Date cannot be parsed with error {e}")
+                        continue
+            if date_obj and date_obj <= datetime.today().date():
+                continue
         
-        bid_title = node.xpath("./td[2]/a[1]")[0].text_content().strip()
-        bid_no = node.xpath("./td[1]/text()[normalize-space()]")[0].strip()
+         
+        
+        bid_title = node.xpath(".//h5")[0].text_content().strip()
+        bid_no = bid_title[:25].strip()
         print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
-        file_links = node.xpath("./td[2]//a")
+        file_links = node.xpath("./div[.//a]//a")
         if not file_links:
             continue
         bid_details[node_idx] = {
@@ -121,7 +126,7 @@ with SB (
         
         for file_idx, file_link in enumerate(file_links, start = 1):
             file_url = file_link.get("href","").strip()
-            file_url = urljoin("https://www.geneseecountymi.gov/",file_url)
+            file_url = urljoin("https://www.missoulacounty.gov/",file_url)
             file_url = quote(file_url,safe="/:?&=#%")
             
             download_name = file_url.split("/")[-1]
@@ -166,6 +171,7 @@ with SB (
         print(f"JSON saved to: {json_path}")
         disconnect_vpn()
         time.sleep(5)
+
         bid_counts = extract_from_json_and_add_to_db(
             json_path=json_path,
             db_url=smi_data_url,
