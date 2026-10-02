@@ -69,7 +69,7 @@ with SB (
     page_source = sb.get_page_source()
     time.sleep(3)
     tree = html.fromstring(page_source)
-    project_nodes = tree.xpath("//table/tbody/tr[position()>1]")
+    project_nodes = tree.xpath("//tbody/tr[contains(normalize-space(),'2026 Kershaw County Resurfacing Project')]/preceding-sibling::tr")
     print(len(project_nodes))
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -81,43 +81,22 @@ with SB (
     }
     
     for node_idx, node in enumerate(project_nodes,start=1):
-        bid_title = node.xpath("./td[2]/p[1]")[0].text_content().strip()
-                
+        
+        bid_title = node.xpath("./td[2]/a")[0].text_content().strip()
+
         bid_no = node.xpath("./td[1]")[0].text_content().strip()
+ 
+        formatted_date = "Not Specified"
 
-        
-        MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
-
-        DATE_PATTERN = re.compile(
-            rf"\b(?:{MONTHS})\s*\d{{1,2}}\s*,\s*\d{{4}}\b"   # October 19, 2026 / August13,2026
-            r"|\b\d{1,2}/\d{1,2}/\d{2,4}\b"                  # 9/18/2026 or 9/18/26
-        )
-        bid_due_date = node.xpath("./td[4]/p[contains(normalize-space(),'DUE') or contains(normalize-space(),'Deadline') or contains(normalize-space(),'Due')]")[0].text_content().strip()
-        match = DATE_PATTERN.search(bid_due_date)
-        bid_due_date = match.group(0) if match else ""
-        
-        formatted_date = regex_date_filter(bid_due_date)
-        date_obj = None
-        if formatted_date:
-            try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
-            except ValueError as e:
-                try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
-                except ValueError as e:
-                    print(f"Date cannot be parsed with error {e}")
-                    continue
-        if date_obj and date_obj <= datetime.today().date():
-            continue
-    
-        
-    
-    
-    
         print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
         
-                
-        file_links = node.xpath("./td[3]//a")
+        directed_link = node.xpath("./td[2]/a")[0].get("href","").strip()
+        directed_link = urljoin("https://www.kershaw.sc.gov/",directed_link)
+        sb.uc_open_with_reconnect(directed_link)
+        sb.sleep(5)
+        live_tree = html.fromstring(sb.get_page_source())
+
+        file_links = live_tree.xpath("//div[@class='detail-content']//a[contains(@href, 'showpublisheddocument')]")
         print(len(file_links))
         if not file_links:
             continue
@@ -131,7 +110,7 @@ with SB (
      
         for file_idx, file_link in enumerate(file_links, start = 1):
             file_url = file_link.get("href","").strip()
-            file_url = urljoin("https://www.manchesternh.gov/",file_url)
+            file_url = urljoin("https://www.kershaw.sc.gov/",file_url)
             file_url = quote(file_url,safe="/:?&=#%")
             
             download_name = file_url.split("/")[-1]
