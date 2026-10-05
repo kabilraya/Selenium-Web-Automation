@@ -171,47 +171,21 @@ def save_nodes_as_pdf(tree, xpath: str, output_path: str, base_url: str = "", ex
 
     HTML(string=f"<html><body>{html_body}</body></html>").write_pdf(output_path, stylesheets=[css])
 
-_MONTHS = (
-    r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
-    r'Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
-)
-_TEXT_DATE = re.compile(
-    rf'\b({_MONTHS})\.?\s*(\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*(\d{{4}})',
-    re.IGNORECASE,
-)
-_NUMERIC_DATE = re.compile(r'(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})(?!\d)')
-
-
 def regex_date_filter(raw_due_date: str) -> str | None:
-    """
-    Extracts a date from text such as:
-      - '9/09/2026', '8/28/26 at 10:00 am'
-      - 'September 9, 2026'
-      - 'Friday, May 1st, 2026 @ 3:00PM CST'
-    Returns 'mm/dd/yyyy', or None if nothing matched.
-    """
-    if not raw_due_date:
+    try:
+        match = re.search(
+            r'(\d{1,2}/\d{1,2}/\d{4})',
+            raw_due_date
+        )
+
+        if match:
+            return match.group(1)
+
         return None
 
-    m = _NUMERIC_DATE.search(raw_due_date)
-    if m:
-        month, day, year = m.groups()
-        fmt = "%m/%d/%Y" if len(year) == 4 else "%m/%d/%y"
-        try:
-            return datetime.strptime(f"{month}/{day}/{year}", fmt).strftime("%m/%d/%Y")
-        except ValueError as e:
-            print(f"Matched numeric pattern but failed to parse: {e}")
-
-    m = _TEXT_DATE.search(raw_due_date)
-    if m:
-        month, day, year = m.groups()
-        try:
-            # first 3 letters covers "May", "Sept", "September", etc.
-            return datetime.strptime(f"{month[:3].title()} {day} {year}", "%b %d %Y").strftime("%m/%d/%Y")
-        except ValueError as e:
-            print(f"Matched text-date pattern but failed to parse: {e}")
-
-    return None
+    except Exception as e:
+        print(f"Error during parsing the date: {e}")
+        return None
 
 
 def santitize_file_name(url:str) -> str:

@@ -10,173 +10,53 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
-from urllib.parse import urljoin
-from lxml import etree
-from markdownify import markdownify as md
-from urllib.parse import urljoin
-import markdown as md_lib
-from weasyprint import HTML, CSS
+
 import requests
-def is_downloadable_file(url):
+def is_downloadable_file(url, sb=None, debug=False):
     try:
-        resp = requests.head(url, allow_redirects=True, timeout=10)
+        session = requests.Session()
+        headers = {"Accept": "application/pdf,text/html,*/*"}
+
+        if sb is not None:
+            headers["User-Agent"] = sb.execute_script("return navigator.userAgent;")
+            headers["Referer"] = sb.get_current_url()
+            for c in sb.driver.get_cookies():
+                session.cookies.set(c["name"], c["value"], domain=c.get("domain"))
+        else:
+            headers["User-Agent"] = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+
+        # (connect_timeout, read_timeout) — bounds a stalled/trickling response too
+        resp = session.get(url, headers=headers, stream=True, timeout=(5, 10), allow_redirects=True)
         content_type = resp.headers.get('Content-Type', '').lower()
         content_disposition = resp.headers.get('Content-Disposition', '').lower()
 
-        if resp.status_code >= 400 or not content_type:
-            resp = requests.get(url, stream=True, timeout=10)
-            content_type = resp.headers.get('Content-Type', '').lower()
-            content_disposition = resp.headers.get('Content-Disposition', '').lower()
-            resp.close()
+        if debug:
+            print(f"URL: {url} -> {resp.url} [{resp.status_code}] ct={content_type!r} cd={content_disposition!r}")
 
-        # Only inspect the disposition TYPE (the part before the first ';'),
-        # never the whole header — the filename can legitimately contain
-        # the word "attachment" (e.g. "Attachment 5-Davis-Bacon-WD.txt"),
-        # which would otherwise false-positive a substring check.
-        disposition_type = content_disposition.split(';')[0].strip()
-        if disposition_type == 'attachment':
+        resp.close()
+
+        if content_disposition.split(';')[0].strip() == 'attachment':
             return True
-
-        INLINE_RENDERABLE = ('text/plain', 'text/html', 'image/', 'text/xml')
-        if any(content_type.startswith(t) for t in INLINE_RENDERABLE):
+        if any(content_type.startswith(t) for t in ('text/plain', 'text/html', 'image/', 'text/xml')):
             return False
-
         return True
 
-    except requests.RequestException:
+    except requests.RequestException as e:
+        if debug:
+            print(f"  -> request failed: {e}")
         return False
 
-DEFAULT_EXCLUDE_XPATHS = [
-    ".//script",
-    ".//noscript",
-    ".//style",
-    ".//iframe",
-    ".//link",
-    ".//meta",
-    ".//svg",
-    ".//button",
-    ".//input",
-    ".//form",
-    ".//comment()",
-    # hidden-via-CSS elements — common in CMS markup for tooltips, modals, etc.
-    ".//*[contains(translate(@style,'DISPLAY','display'),'display:none')]",
-    ".//*[contains(translate(@style,'DISPLAY','display'),'display: none')]",
-    ".//*[@hidden]",
-    ".//*[@aria-hidden='true']",
-]
 
-
-def remove_excluded_elements(node, exclude_xpaths):
-    """Remove elements matching any of the given XPath expressions
-    (relative to `node`) before converting to Markdown/HTML."""
-    xpaths = DEFAULT_EXCLUDE_XPATHS + list(exclude_xpaths or [])
-    for xpath in xpaths:
-        for match in node.xpath(xpath):
-            parent = match.getparent()
-            if parent is not None:
-                parent.remove(match)
-
-def strip_empty_elements(node):
-    """Remove elements that contain no visible text/content, working bottom-up
-    so a parent that becomes empty after its empty children are removed
-    also gets removed."""
-    EMPTY_CANDIDATE_TAGS = {"p", "ol", "ul", "div", "span"}
-
-    for child in list(node):
-        strip_empty_elements(child)
-
-    if node.tag in EMPTY_CANDIDATE_TAGS:
-        has_text = (node.text and node.text.strip()) or any(
-            (child.tail and child.tail.strip()) for child in node
-        )
-        has_meaningful_children = len(node) > 0 
-        if not has_text and not has_meaningful_children:
-            parent = node.getparent()
-            if parent is not None:
-                if node.tail and node.tail.strip():
-                    prev = node.getprevious()
-                    if prev is not None:
-                        prev.tail = (prev.tail or "") + node.tail
-                    else:
-                        parent.text = (parent.text or "") + node.tail
-                parent.remove(node)
-
-
-
-def clean_node(node, base_url: str = "", exclude_xpaths=None):
-    """Normalize links/images and strip dead elements. Mutates node in place."""
-    for a in node.xpath(".//a[@href]"):
-        href = a.get("href", "").strip()
-        if href and base_url:
-            a.set("href", urljoin(base_url, href))
-
-    for img in node.xpath(".//img[@src]"):
-        src = img.get("src", "").strip()
-        if src and base_url:
-            img.set("src", urljoin(base_url, src))
-        if not img.get("alt"):
-            img.set("alt", "image")
-
-    remove_excluded_elements(node, exclude_xpaths)
-    strip_empty_elements(node)
-    return node
-
-
-def node_to_markdown(node, base_url: str = "", exclude_xpaths=None) -> str:
-    clean_node(node, base_url=base_url, exclude_xpaths=exclude_xpaths)
-    inner_html = etree.tostring(node, encoding="unicode", method="html")
-    text = md(inner_html, heading_style="ATX", bullets="-", strip=["script", "style"])
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text
-
-
-def node_to_pdf_html(node, base_url: str = "", exclude_xpaths=None) -> str:
-    """Like node_to_markdown, but keeps inline styles intact for PDF rendering."""
-    clean_node(node, base_url=base_url, exclude_xpaths=exclude_xpaths)
-    return etree.tostring(node, encoding="unicode", method="html")
-
-def save_nodes_as_pdf(tree, xpath: str, output_path: str, base_url: str = "", exclude_xpaths=None) -> None:
-    nodes = tree.xpath(xpath)
-    if not nodes:
-        print("No nodes found — nothing to save")
-        return
-
-    md_chunks, html_chunks = [], []
-    for idx, node in enumerate(nodes):
-        # clean_node() mutates the node once; reuse it for both outputs
-        clean_node(node, base_url=base_url, exclude_xpaths=exclude_xpaths)
-        inner_html = etree.tostring(node, encoding="unicode", method="html")
-
-        md_chunks.append(md(inner_html, heading_style="ATX", bullets="-", strip=["script", "style"]))
-        html_chunks.append(inner_html)
-
-        if idx < len(nodes) - 1:
-            md_chunks.append("\n\n---\n\n")
-            html_chunks.append("<hr>")
-
-    full_markdown = re.sub(r"\n{3,}", "\n\n", "\n\n".join(md_chunks)).strip()
-    with open(output_path.replace(".pdf", ".md"), "w", encoding="utf-8") as f:
-        f.write(full_markdown)
-
-    html_body = "".join(html_chunks)
-
-    css = CSS(string="""
-        @page { size: letter; margin: 40px; }
-        body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; line-height: 1.4; }
-        hr { border: none; border-top: 1px solid #999; margin: 12px 0; }
-        p { margin: 0 0 10px 0; }
-        ol, ul { margin: 4px 0 10px 1.2em; padding: 0; }
-        a { color: blue; text-decoration: underline; }
-    """)
-
-    HTML(string=f"<html><body>{html_body}</body></html>").write_pdf(output_path, stylesheets=[css])
 
 _MONTHS = (
     r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
     r'Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
 )
 _TEXT_DATE = re.compile(
-    rf'\b({_MONTHS})\.?\s*(\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*(\d{{4}})',
+    rf'\b({_MONTHS})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+(\d{{4}})',
     re.IGNORECASE,
 )
 _NUMERIC_DATE = re.compile(r'(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})(?!\d)')
@@ -212,6 +92,7 @@ def regex_date_filter(raw_due_date: str) -> str | None:
             print(f"Matched text-date pattern but failed to parse: {e}")
 
     return None
+
 
 
 def santitize_file_name(url:str) -> str:
@@ -277,7 +158,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
-    timeout = 180
+    timeout = 300
     poll_interval = 0.5
     deadline = time.time() + timeout
     actual_file_name = None

@@ -23,6 +23,7 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
+from kabil_utils.extract_date_from_textblock import extract_raw_date
 import re
 #make all the path 
 start_time = time.perf_counter()
@@ -69,37 +70,8 @@ with SB (
     page_source = sb.get_page_source()
     time.sleep(3)
     tree = html.fromstring(page_source)
-    nodes = tree.xpath("//p[contains(normalize-space(),'BID 2026-0009')]/preceding-sibling::*")
-    bids = []
-    current = None
-    for node in nodes:
-        tag = node.tag
-        if not isinstance(tag, str):      # skip comments / processing instructions
-            continue
-        text = re.sub(r"\s+", " ", node.text_content().replace("\xa0", " ")).strip()
-
-        if tag == "hr" or (tag == "p" and not text):
-            continue
-        
-        m = re.match(r"BID\s+(\d{4}-\d+)", text, re.I)
+    nodes = tree.xpath("//main[contains(normalize-space(),'Current Open Bids')]/div/div/section[position()>1]")
     
-        
-        if tag == "p" and m:
-            current = {
-                "bid_title": text,
-                "bid_no": m.group(1),
-                "bid_due_date": "Not Specified",
-                "links": [],
-            }
-            bids.append(current)
-            continue
-        
-       
-        if current is not None:
-            for a in node.xpath(".//a[@href]"):
-                current["links"].append(a)
-
-    print(len(bids))
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -110,21 +82,38 @@ with SB (
     "server_path" : server_path
     }
     
-    for node_idx, node in enumerate(bids,start=1):
+    for node_idx, node in enumerate(nodes,start=1):
         
-        bid_title = node['bid_title']
+        bid_title = node.xpath("./header")[0].text_content().strip()
 
-        bid_no = node['bid_no']
-        
-        formatted_date = "Not Specified"
-        
+        bid_no = bid_title[:25].strip()
+        bid_due_date = node.xpath(".//p[contains(normalize-space(),'Submitting Bids')] | .//li[contains(normalize-space(),'bids will be publicly opened')] | //div[contains(normalize-space(),'Bid Deadline')][./strong]")[0].text_content().strip()
+        bid_due_date = extract_raw_date(bid_due_date)
 
-        
-        
-        
-
-        file_links = node['links']
+        print(bid_due_date)
+        if not bid_due_date:
+            formatted_date = "Not Specified"
+        else:
+            formatted_date = regex_date_filter(bid_due_date)
+            date_obj = None
+            if formatted_date:
+                try:
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+                except ValueError as e:
+                    try:
+                        date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                    except ValueError as e:
+                        print(f"Date cannot be parsed with error {e}")
+                        continue
+            if date_obj and date_obj <= datetime.today().date():
+                continue
+        print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}") 
+      
+        file_links = node.xpath(".//a[@aria-describedby='audioeye_pdf_message']")
         print(len(file_links))
+        # print(len(node.xpath(".//a")), len(node.xpath(".//a[@aria-describedby]")))
+        # for a in node.xpath(".//a")[:5]:
+        #     print(html.tostring(a)[:200])
         if not file_links:
             continue
         bid_details[node_idx] = {
@@ -137,7 +126,7 @@ with SB (
      
         for file_idx, file_link in enumerate(file_links, start = 1):
             file_url = file_link.get("href","").strip()
-            file_url = urljoin("https://www.browardhealth.org/",file_url)
+            file_url = urljoin("https://www.bulloch.k12.ga.us/",file_url)
             file_url = quote(file_url,safe="/:?&=#%")
             
             download_name = file_url.split("/")[-1]
@@ -181,47 +170,47 @@ with SB (
 
         print(f"JSON saved to: {json_path}")
         
-        bid_counts = extract_from_json_and_insert(
-            json_path=json_path,
-            db_url=smi_data_url,
-            region_name=region_name,
-            endpoint_url=endpoint_url,
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key,
-        )
-        end_time = time.perf_counter()
-        total_execution_time = round((end_time - start_time) / 60)
-        total_bids = bid_counts["total_bid"]
-        total_new_bid = bid_counts["total_new_bid"]
-        total_new_bid_file = bid_counts["total_new_bid_file"]
-        print(f"Total bids: {total_bids}")
-        print(f"Total new bids: {total_new_bid}")
-        print(f"Total new bid files: {total_new_bid_file}")
-        print(f"Process took around {total_execution_time}")
+        # bid_counts = extract_from_json_and_insert(
+        #     json_path=json_path,
+        #     db_url=smi_data_url,
+        #     region_name=region_name,
+        #     endpoint_url=endpoint_url,
+        #     aws_access_key_id=aws_access_key_id,
+        #     aws_secret_access_key=aws_secret_access_key,
+        # )
+        # end_time = time.perf_counter()
+        # total_execution_time = round((end_time - start_time) / 60)
+        # total_bids = bid_counts["total_bid"]
+        # total_new_bid = bid_counts["total_new_bid"]
+        # total_new_bid_file = bid_counts["total_new_bid_file"]
+        # print(f"Total bids: {total_bids}")
+        # print(f"Total new bids: {total_new_bid}")
+        # print(f"Total new bid files: {total_new_bid_file}")
+        # print(f"Process took around {total_execution_time}")
 
-        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+        # #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
 
-        session, _ = create_database_session(database_url=smi_record_url)
-        insert_into_record_db(
-            session = session,
-            ecgain=ecgains,
-            module_name=module_name.split(".")[0],
-            total_bid= total_bids,
-            total_new_bid=total_new_bid,
-            total_new_bid_files=total_new_bid_file,
-            timeelapsed=total_execution_time
-        )
+        # session, _ = create_database_session(database_url=smi_record_url)
+        # insert_into_record_db(
+        #     session = session,
+        #     ecgain=ecgains,
+        #     module_name=module_name.split(".")[0],
+        #     total_bid= total_bids,
+        #     total_new_bid=total_new_bid,
+        #     total_new_bid_files=total_new_bid_file,
+        #     timeelapsed=total_execution_time
+        # )
 
-        update_value(
-                    db_url=smi_record_url, 
-                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
-                    "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
-                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
-                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                    )
-        delete_files_in_directory(download_path)
+        # update_value(
+        #             db_url=smi_record_url, 
+        #             query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
+        #             "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
+        #             new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
+        #             condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+        #             )
+        # delete_files_in_directory(download_path)
     
-        print("Scraping Successful")
+        # print("Scraping Successful")
 
     
 
