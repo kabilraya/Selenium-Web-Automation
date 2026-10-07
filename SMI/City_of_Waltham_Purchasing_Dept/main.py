@@ -79,18 +79,24 @@ with SB (
     }
     seen_bid_no = set()
     for node_idx, node in enumerate(project_nodes,start=1):
-        bid_due_date = node.xpath("./div[2]/div[2]/span[2]")[0].text_content().strip()
-        if bid_due_date.lower() == "upon contract":
-            print("Skipping Upon Contract")
-            continue
-
         bid_title = node.xpath("./div[1]/span[1]")[0].text_content().strip()
-        bid_no = bid_title[:25].strip()
-
+        bid_no = node.xpath("./div[1]/span[2]/text()")[0].strip()
         if bid_no in seen_bid_no:
             print(f"\n\n{bid_no} is repeated so skipping this\n\n")
             continue
         seen_bid_no.add(bid_no)
+        directed_link = node.xpath("./div[1]/span[1]/a")[0].get("href","")
+        directed_link = urljoin("https://www.city.waltham.ma.us/",directed_link)
+        sb.uc_open_with_reconnect(directed_link)
+        sb.sleep(3)
+        tree = html.fromstring(sb.get_page_source())
+        sb.sleep(2)
+
+        bid_due_date = tree.xpath("//table[@summary='Table for layout purposes']/tbody//table/tbody/tr[2]/td/span/p[contains(normalize-space(),'Bid Opening') or contains(normalize-space(),'Due Date') or contains(normalize-space(),'Submission Deadline')][last()]/text()")[0].strip()
+
+        
+
+        
         
         formatted_date = regex_date_filter(bid_due_date)
         date_obj = None
@@ -106,9 +112,8 @@ with SB (
         if date_obj and date_obj <= datetime.today().date():
             continue
         print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
-        directed_links = node.xpath("./div[1]/span[1]/a")
-        if not directed_links:
-            continue
+        
+        
         bid_details[node_idx] = {
             "bid_no": bid_no,
             "bid_title": bid_title,          
@@ -116,95 +121,78 @@ with SB (
             "agency_name": module_name,
             "files_info": {}
         }
-        for directed_link in directed_links:
-            directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://ca-fostercity.civicplus.com/",directed_url)
-            sb.uc_open_with_reconnect(directed_url)
-            sb.sleep(3)
-            sb.uc_gui_click_captcha()
-            sb.sleep(3)
-            sb.switch_to_default_content()
-            sb.sleep(3)
-            page_source = sb.get_page_source()
-            sb.sleep(2)
-            tree = html.fromstring(page_source)
-            notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
-            notice_path = os.path.join(download_path, notice_filename)
-            os.makedirs(download_path, exist_ok=True)
+        
+        notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
+        notice_path = os.path.join(download_path, notice_filename)
+        os.makedirs(download_path, exist_ok=True)
+        notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
+        info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details'] | //table[@role='presentation' and contains(@style,'background-color')]"
+        
+        
+        is_duplicate_hash = False
+        try:
+            session, _ = create_database_session(database_url=smi_data_url)
+            is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
+            session.close()
+        except Exception as e:
+            print(f"Session creation failed {e}")
+        if is_duplicate_hash:
+            print("Hash Duplication found for notice PDF")
+        else:
+            save_nodes_as_pdf(
+                                                     
+                        xpath=info_table,
+                        tree=tree,
+                        output_path=notice_path,                               
+                        base_url="https://www.city.waltham.ma.us/",
+            )
 
-            notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
-            info_table = "//table[translate(@summary,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')='bid details'] | //table[@role='presentation' and contains(@style,'background-color')]"
+            if os.path.exists(notice_path):
+                mb_size = os.path.getsize(notice_path) / (1024 * 1024)
+                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+                bid_details[node_idx]["files_info"][new_file_index] = {
+                    "file_name": notice_filename,
+                    "sanitized_file_name": notice_filename,
+                    "file_url": directed_link,
+                    "file_size": f"{mb_size:.5f} MB",
+                    "md5_hash": notice_hash,
+                    "iconverted": 0
+                }
+            else:
+                print("Notice PDF was not created — no tables matched, skipping dictionary update")
+        file_links = tree.xpath("//tr[contains(normalize-space(),'Related Documents:')]/following-sibling::tr//a")
+        print(len(file_links))
+        if not file_links:
+            continue
+        
+        for file_idx, file_link in enumerate(file_links, start = 1):
+            file_url = file_link.get("href","").strip()
+            file_url = urljoin("https://www.city.waltham.ma.us/",file_url)
+            file_url = quote(file_url,safe="/:?&=#%")
             
-            
-            is_duplicate_hash = False
+            download_name = file_url.split("/")[-1]
+            print(download_name)
+            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+            # create a session of database to check for duplication of hash and kill the session immediately
             try:
                 session, _ = create_database_session(database_url=smi_data_url)
-                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
                 session.close()
+                if is_duplicate_hash:
+                    print("Hash Duplication found")
+                    continue
             except Exception as e:
                 print(f"Session creation failed {e}")
-
-            if is_duplicate_hash:
-                print("Hash Duplication found for notice PDF")
-            else:
-                save_nodes_as_pdf(
-                                                         
-                            xpath=info_table,
-                            tree=tree,
-                            output_path=notice_path,                               
-                            base_url="https://ca-fostercity.civicplus.com/",
-                )
-    
-                if os.path.exists(notice_path):
-                    mb_size = os.path.getsize(notice_path) / (1024 * 1024)
-                    new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                    bid_details[node_idx]["files_info"][new_file_index] = {
-                        "file_name": notice_filename,
-                        "sanitized_file_name": notice_filename,
-                        "file_url": directed_url,
-                        "file_size": f"{mb_size:.5f} MB",
-                        "md5_hash": notice_hash,
-                        "iconverted": 0
-                    }
-                else:
-                    print("Notice PDF was not created — no tables matched, skipping dictionary update")
-            file_links = tree.xpath("//tr[contains(normalize-space(),'Related Documents:')]/following-sibling::tr//a")
-            print(len(file_links))
-
-            if not file_links:
                 continue
+            new_file_index = len(bid_details[node_idx]["files_info"]) + 1
             
-            for file_idx, file_link in enumerate(file_links, start = 1):
-                file_url = file_link.get("href","").strip()
-                file_url = urljoin("https://ca-fostercity.civicplus.com/",file_url)
-                file_url = quote(file_url,safe="/:?&=#%")
-                if not is_downloadable_file(file_url):
-                    print("Not a downloadable link so skipping it")
-                    continue
-
-                download_name = file_url.split("/")[-1]
-                print(download_name)
-                file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
-                # create a session of database to check for duplication of hash and kill the session immediately
-                try:
-                    session, _ = create_database_session(database_url=smi_data_url)
-                    is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
-                    session.close()
-                    if is_duplicate_hash:
-                        print("Hash Duplication found")
-                        continue
-                except Exception as e:
-                    print(f"Session creation failed {e}")
-                    continue
-                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                
-                file = download_files(sb = sb,
-                                      file_url=file_url,
-                                      script_directory=script_directory,
-                                      download_path=download_path,
-                                      file_index=new_file_index,
-                                      file_hash=file_hash)
-                bid_details[node_idx]["files_info"].update(file)
+            file = download_files(sb = sb,
+                                  file_url=file_url,
+                                  script_directory=script_directory,
+                                  download_path=download_path,
+                                  file_index=new_file_index,
+                                  file_hash=file_hash)
+            bid_details[node_idx]["files_info"].update(file)
 
     has_downloads = any(
         bid["files_info"]
