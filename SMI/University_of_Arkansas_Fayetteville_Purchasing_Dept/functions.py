@@ -63,7 +63,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, file_hash, ecgains, bid_no):
+def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -85,13 +85,13 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
             # So we iterate over and update the file = {} with proper indexing
 
             for file_name, size_in_mb, path in split_files:
-                new_file_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=file_name)
+                
                 file[file_index] = {
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
                     "file_url" : file_url,
                     "file_size" : f"{size_in_mb:.2f} MB",
-                    "md5_hash" : new_file_hash,
+                    "md5_hash" : file_hash,
                     "iconverted" : iconverted
                 }
                 file_index += 1

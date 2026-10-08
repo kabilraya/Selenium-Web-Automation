@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
+from kabil_utils.md5_generator import generate_md5_hash
 import requests
 
 def is_direct_download(url, session=None):
@@ -38,39 +39,45 @@ def is_direct_download(url, session=None):
 import re
 from datetime import datetime
 
+_MONTHS = (
+    r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+    r'Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+)
+_TEXT_DATE = re.compile(
+    rf'\b({_MONTHS})\.?\s*(\d{{1,2}})(?:st|nd|rd|th)?\s*,?\s*(\d{{4}})',
+    re.IGNORECASE,
+)
+_NUMERIC_DATE = re.compile(r'(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})(?!\d)')
+
+
 def regex_date_filter(raw_due_date: str) -> str | None:
     """
-    Extracts a date from text in either of these forms:
-      - '9/09/2026' or '09/9/2026'      (numeric mm/dd/yyyy)
-      - 'September 9, 2026'             (Month dd, yyyy)
-    Returns a normalized 'mm/dd/yyyy' string, or None if nothing matched.
+    Extracts a date from text such as:
+      - '9/09/2026', '8/28/26 at 10:00 am'
+      - 'September 9, 2026'
+      - 'Friday, May 1st, 2026 @ 3:00PM CST'
+    Returns 'mm/dd/yyyy', or None if nothing matched.
     """
     if not raw_due_date:
         return None
 
-    
-    numeric_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', raw_due_date)
-    if numeric_match:
+    m = _NUMERIC_DATE.search(raw_due_date)
+    if m:
+        month, day, year = m.groups()
+        fmt = "%m/%d/%Y" if len(year) == 4 else "%m/%d/%y"
         try:
-            date_obj = datetime.strptime(numeric_match.group(1), "%m/%d/%Y")
-            return date_obj.strftime("%m/%d/%Y")
+            return datetime.strptime(f"{month}/{day}/{year}", fmt).strftime("%m/%d/%Y")
         except ValueError as e:
             print(f"Matched numeric pattern but failed to parse: {e}")
 
-    
-    text_match = re.search(
-        r'([A-Za-z]+\s+\d{1,2},?\s+\d{4})',
-        raw_due_date
-    )
-    if text_match:
-        raw = text_match.group(1).replace(",", "")
-        for fmt in ("%B %d %Y", "%b %d %Y"):
-            try:
-                date_obj = datetime.strptime(raw, fmt)
-                return date_obj.strftime("%m/%d/%Y")
-            except ValueError:
-                continue
-        print(f"Matched text-date pattern but failed to parse: {raw}")
+    m = _TEXT_DATE.search(raw_due_date)
+    if m:
+        month, day, year = m.groups()
+        try:
+            # first 3 letters covers "May", "Sept", "September", etc.
+            return datetime.strptime(f"{month[:3].title()} {day} {year}", "%b %d %Y").strftime("%m/%d/%Y")
+        except ValueError as e:
+            print(f"Matched text-date pattern but failed to parse: {e}")
 
     return None
 
@@ -81,7 +88,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
+def download_files(sb, file_url, script_directory,download_path,file_index, file_hash, bid_no, ecgains):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -103,13 +110,13 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
             # So we iterate over and update the file = {} with proper indexing
 
             for file_name, size_in_mb, path in split_files:
-
+                new_file_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=file_name)
                 file[file_index] = {
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
                     "file_url" : file_url,
                     "file_size" : f"{size_in_mb:.2f} MB",
-                    "md5_hash" : file_hash,
+                    "md5_hash" : new_file_hash,
                     "iconverted" : iconverted
                 }
                 file_index += 1
@@ -133,13 +140,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     os.makedirs(downloaded_files_dir, exist_ok=True)
     before_files = set(os.listdir(downloaded_files_dir))
     sb.execute_script("window.open(arguments[0], '_blank');",file_url)
-    if not is_direct_download(file_url):
-        sb.sleep(5)
-        sb.switch_to_window(sb.driver.window_handles[-1])
-        sb.sleep(5)
-        sb.switch_to_frame("//iframe[@title='PDF document']")
-        sb.sleep(2)
-        sb.hover_and_click(click_selector = "//button[@id='open-button']", hover_selector = "//button[@id='open-button']")
+    
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
     timeout = 180

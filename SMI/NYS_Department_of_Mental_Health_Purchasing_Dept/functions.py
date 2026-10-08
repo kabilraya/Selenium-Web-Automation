@@ -10,8 +10,39 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
+from urllib.parse import urljoin
 
-from kabil_utils.md5_generator import generate_md5_hash
+import requests
+
+
+def is_downloadable_file(url):
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=10)
+        content_type = resp.headers.get('Content-Type', '').lower()
+        content_disposition = resp.headers.get('Content-Disposition', '').lower()
+
+        if resp.status_code >= 400 or not content_type:
+            resp = requests.get(url, stream=True, timeout=10)
+            content_type = resp.headers.get('Content-Type', '').lower()
+            content_disposition = resp.headers.get('Content-Disposition', '').lower()
+            resp.close()
+
+        # Only inspect the disposition TYPE (the part before the first ';'),
+        # never the whole header — the filename can legitimately contain
+        # the word "attachment" (e.g. "Attachment 5-Davis-Bacon-WD.txt"),
+        # which would otherwise false-positive a substring check.
+        disposition_type = content_disposition.split(';')[0].strip()
+        if disposition_type == 'attachment':
+            return True
+
+        INLINE_RENDERABLE = ('text/plain', 'text/html', 'image/', 'text/xml')
+        if any(content_type.startswith(t) for t in INLINE_RENDERABLE):
+            return False
+
+        return True
+
+    except requests.RequestException:
+        return False
 
 
 _MONTHS = (
@@ -57,13 +88,14 @@ def regex_date_filter(raw_due_date: str) -> str | None:
     return None
 
 
+
 def santitize_file_name(url:str) -> str:
     root, ext = os.path.splitext(url)
     root = re.sub("[^a-zA-Z0-9_.-]","_",root)
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, file_hash, ecgains, bid_no):
+def download_files(sb,  script_directory,download_path,file_index, file_hash,file_url = None):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -80,18 +112,18 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
         if mb_size > 50:
             split_files = split_pdf(file_path=file_path)
-            
+
             #this return a list of tuple [(file_name, size_in_mb, path)].
             # So we iterate over and update the file = {} with proper indexing
 
             for file_name, size_in_mb, path in split_files:
-                new_file_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=file_name)
+
                 file[file_index] = {
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
                     "file_url" : file_url,
                     "file_size" : f"{size_in_mb:.2f} MB",
-                    "md5_hash" : new_file_hash,
+                    "md5_hash" : file_hash,
                     "iconverted" : iconverted
                 }
                 file_index += 1
@@ -120,7 +152,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
-    timeout = 300
+    timeout = 180
     poll_interval = 0.5
     deadline = time.time() + timeout
     actual_file_name = None

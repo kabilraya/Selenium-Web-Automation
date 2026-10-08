@@ -118,7 +118,7 @@ with SB (
         }
         for directed_link in directed_links:
             directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://www.fountaininn.org/",directed_url)
+            directed_url = urljoin("https://cityofmiddletown.org/",directed_url)
             sb.uc_open_with_reconnect(directed_url)
             sb.sleep(3)
             sb.uc_gui_click_captcha()
@@ -152,7 +152,7 @@ with SB (
                             xpath=info_table,
                             tree=tree,
                             output_path=notice_path,                               
-                            base_url="https://www.fountaininn.org/",
+                            base_url="https://cityofmiddletown.org/",
                 )
     
                 if os.path.exists(notice_path):
@@ -176,7 +176,7 @@ with SB (
             
             for file_idx, file_link in enumerate(file_links, start = 1):
                 file_url = file_link.get("href","").strip()
-                file_url = urljoin("https://www.fountaininn.org/",file_url)
+                file_url = urljoin("https://cityofmiddletown.org/",file_url)
                 file_url = quote(file_url,safe="/:?&=#%")
                 # if not is_downloadable_file(file_url):
                 #     print("Not a downloadable link so skipping it")

@@ -13,7 +13,7 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 
-from functions import download_files
+from functions import download_files,regex_date_filter
 from urllib.parse import urljoin, quote
 from datetime import datetime
 from model.smi_model import SMI
@@ -23,6 +23,7 @@ from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
 from kabil_utils.vpn_disconnet import disconnect_vpn
 import re
+from kabil_utils.extract_date_from_textblock import extract_raw_date
 from dateutil import parser as dateparser
 #make all the path 
 start_time = time.perf_counter()
@@ -70,7 +71,7 @@ with SB (
     tree = html.fromstring(page_source)
     sb.sleep(3)
     
-    bid_nodes = tree.xpath("//div[contains(@class, 'elementor-widget-text-editor')][.//ul]")
+    bid_nodes = tree.xpath("//div[contains(@class, 'elementor-widget-text-editor')][./h5]")
     print(len(bid_nodes))
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -82,29 +83,33 @@ with SB (
     }
     
     for node_idx, node in enumerate(bid_nodes,start=1):        
-        bid_title = node.xpath("./p[1]")[0].text_content().strip()
+        bid_title = node.xpath("./h5")[0].text_content().strip()
         
         
         bid_no = bid_title[:25].strip()
-        bid_due_date = node.xpath("./p[2]")[0].text_content().strip()
-        match = re.search(
-        r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b',
-        bid_due_date
-        )
+        bid_due_date_text = node.xpath("./p[contains(normalize-space(),'soliciting bids') or contains(normalize-space(),'Sealed proposals will be received')] | .//li[contains(normalize-space(),'All bids should be submitted')]")[0].text_content().strip()
         
-        date_str = match.group(0)
-        formatted_date = dateparser.parse(date_str)
+        bid_due_date = extract_raw_date(bid_due_date_text)
         
-
-        date_obj = formatted_date.date() if formatted_date else None
+        formatted_date = regex_date_filter(bid_due_date)
         
+        date_obj = None
+        if formatted_date:
+            try:
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+            except ValueError as e:
+                try:
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                except ValueError as e:
+                    print("Couldn't parse the given date")
+                    continue
 
         if date_obj and date_obj <= datetime.today().date():
-            
             continue
 
-        print(formatted_date)
-        print(f"Bid Title: {bid_title}\nBid No.:{bid_no}")
+
+        print(f"Bid Title: {bid_title}\nBid No.:{bid_no}\nBid Due Date: {formatted_date}")
+
         
         
         file_links = node.xpath(".//a")
@@ -112,12 +117,12 @@ with SB (
             continue
         print(len(file_links))
         bid_details[node_idx] = {
-                "bid_no": bid_no,
-                "bid_title": bid_title,          
-                "bid_due_date": formatted_date.strftime("%m/%d/%Y"),        
-                "agency_name": module_name,
-                "files_info": {}
-            }
+                                    "bid_no": bid_no,
+                                    "bid_title": bid_title,          
+                                    "bid_due_date": formatted_date,        
+                                    "agency_name": module_name,
+                                    "files_info": {}
+                                }
         for file_idx, file in enumerate(file_links, start = 1):
             file_url = file.get("href","").strip()
             if not file_url:
@@ -145,7 +150,9 @@ with SB (
                                   script_directory=script_directory,
                                   download_path=download_path,
                                   file_index=new_file_index,
-                                  file_hash=file_hash)
+                                  file_hash=file_hash,
+                                  ecgains=ecgains,
+                                  bid_no=bid_no)
             bid_details[node_idx]["files_info"].update(file)
 
     has_downloads = any(
