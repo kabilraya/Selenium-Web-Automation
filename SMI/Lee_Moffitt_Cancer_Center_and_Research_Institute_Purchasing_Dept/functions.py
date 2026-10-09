@@ -10,31 +10,9 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
-import re
-import requests
-import gdown
-def is_direct_download(url, session=None):
-    req = session or requests
-    try:
-        resp = req.head(url, allow_redirects=True, timeout=10)
 
-        # some servers don't implement HEAD properly — fall back to GET
-        if resp.status_code >= 400 or not resp.headers.get('Content-Type'):
-            resp = req.get(url, stream=True, timeout=10)
-            resp.close()
+from kabil_utils.md5_generator import generate_md5_hash
 
-        content_type = resp.headers.get('Content-Type', '').lower()
-        content_disposition = resp.headers.get('Content-Disposition', '').lower()
-
-        if 'attachment' in content_disposition:
-            return True   
-        if content_type and 'text/html' not in content_type:
-            return True   
-
-        return False  
-
-    except requests.RequestException:
-        return False
 
 _MONTHS = (
     r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
@@ -85,7 +63,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
+def download_files(sb, file_url, script_directory,download_path,file_index, file_hash, ecgains, bid_no):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -102,18 +80,18 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
         if mb_size > 50:
             split_files = split_pdf(file_path=file_path)
-
+            
             #this return a list of tuple [(file_name, size_in_mb, path)].
             # So we iterate over and update the file = {} with proper indexing
 
             for file_name, size_in_mb, path in split_files:
-
+                new_file_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=file_name)
                 file[file_index] = {
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
                     "file_url" : file_url,
                     "file_size" : f"{size_in_mb:.2f} MB",
-                    "md5_hash" : file_hash,
+                    "md5_hash" : new_file_hash,
                     "iconverted" : iconverted
                 }
                 file_index += 1
@@ -136,11 +114,13 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     downloaded_files_dir = os.path.join(script_directory, "downloaded_files")
     os.makedirs(downloaded_files_dir, exist_ok=True)
     before_files = set(os.listdir(downloaded_files_dir))
-    sb.execute_script("window.open(arguments[0],'_blank');",file_url)
-    
+    sb.execute_script("window.open(arguments[0], '_blank');",file_url)
+    sb.sleep(5)
+    sb.switch_to_window(sb.driver.window_handles[-1])
+
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
-    timeout = 180
+    timeout = 600
     poll_interval = 0.5
     deadline = time.time() + timeout
     actual_file_name = None
@@ -148,10 +128,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     while time.time() < deadline:
         current_files = set(os.listdir(downloaded_files_dir))
         new_files = current_files - before_files
-        completed = [
-                                    f for f in new_files
-                                    if not f.lower().endswith(partial_exts) and not f.startswith(".")
-                                ]
+        completed = [f for f in new_files if not f.lower().endswith(partial_exts)]
 
         if completed:
             completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)

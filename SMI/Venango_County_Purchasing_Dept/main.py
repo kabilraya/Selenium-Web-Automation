@@ -13,17 +13,18 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files, regex_date_filter
-from urllib.parse import urljoin,urlsplit,quote
+from functions import download_files, regex_date_filter, is_downloadable_file, save_nodes_as_pdf
+from urllib.parse import urljoin,quote
 from datetime import datetime
 from model.smi_model import SMI
-
-
 from kabil_utils.extract_and_insertion import extract_from_json_and_insert
+
+
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+from kabil_utils.extract_bid_number import extract_bid_no
+import re
 #make all the path 
 start_time = time.perf_counter()
 
@@ -59,15 +60,19 @@ with SB (
     external_pdf = True,
     locale = "en",
 ) as sb:
-    sb.uc_open_with_reconnect(main_url)
-    
+    sb.uc_open_with_reconnect(main_url, reconnect_time=6)
+
     sb.uc_gui_click_captcha()
     sb.sleep(3)
+    sb.switch_to_default_content()
+
+    sb.sleep(4)
     page_source = sb.get_page_source()
-    time.sleep(5)
+    time.sleep(3)
     tree = html.fromstring(page_source)
-    all_bids = tree.xpath("//table/tbody/tr")
-    print(f"Number of bid nodes available are {len(all_bids)}")
+    nodes = tree.xpath("//div[contains(@class,'rz-cards-row')]/div")
+    print(len(nodes))
+    
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -76,53 +81,94 @@ with SB (
     "download_path" : download_path,
     "server_path" : server_path
     }
-
-    for node_idx, node in enumerate(all_bids,start=1):
+    
+    for node_idx, node in enumerate(nodes,start=1):
         
-        bid_title = node.xpath("./td[2]/a")[0].text_content().strip()
-        bid_no = node.xpath("./td[1]")[0].text_content().strip()
-        bid_due_date = node.xpath("./td[4]")[0].text_content().strip()
+        bid_title = node.xpath(".//h3")[0].text_content().strip()
+        
+
+        bid_no = extract_bid_no(bid_title)
+
+        
+        bid_due_date = node.xpath(".//span[contains(normalize-space(),'End date')]/text()[2]")[0].strip()
         
         formatted_date = regex_date_filter(bid_due_date)
         date_obj = None
         if formatted_date:
             try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
             except ValueError as e:
                 try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
                 except ValueError as e:
-                    print(f"Cannot Parse the date.. Failed due to: {e}")
+                    print("Couldn't parse the date")
                     continue
-
         if date_obj and date_obj <= datetime.today().date():
-            
             continue
-        print(f"Bid Title: {bid_title} \nBid No.: {bid_no}\nDue Date: {formatted_date}")
-        directed_link = node.xpath("./td[2]/a")[0].get("href","").strip()
-        directed_link = urljoin("https://www.arlingtonma.gov/",directed_link)
-        sb.uc_open_with_reconnect(directed_link)
+        print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}") 
+        bid_details[node_idx] = {
+                                    "bid_no": bid_no,
+                                    "bid_title": bid_title,          
+                                    "bid_due_date": formatted_date,        
+                                    "agency_name": module_name,
+                                    "files_info": {}
+                                }
+        expand_button = f"//div[contains(@class,'rz-cards-row')]/div[{node_idx}]//span[normalize-space()='Expand Details' and @data-text]"
+        sb.hover_and_click(hover_selector=expand_button, click_selector=expand_button)
         sb.sleep(5)
         live_tree = html.fromstring(sb.get_page_source())
-        sb.sleep(2)
+        notice_filename = re.sub(r'[\\/:*?"<>|&#\s]+', "_", bid_title).strip("._") + "_bid_notice.pdf"
+        notice_path = os.path.join(download_path, notice_filename)
+        os.makedirs(download_path, exist_ok=True)
+        notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
+        info_table = "//div[@class = 'bid-details'] | //div[contains(@class,'offcanvas-body')]//h4[@class='bid-title']"
         
-        file_links = live_tree.xpath("//div[@class='detail-content']//a")
+        
+        is_duplicate_hash = False
+        try:
+            session, _ = create_database_session(database_url=smi_data_url)
+            is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
+            session.close()
+        except Exception as e:
+            print(f"Session creation failed {e}")
+        if is_duplicate_hash:
+            print("Hash Duplication found for notice PDF")
+        else:
+            save_nodes_as_pdf(
+                                                     
+                        xpath=info_table,
+                        tree=live_tree,
+                        output_path=notice_path,                               
+                        base_url="https://www.venangocountypa.gov/",
+            )
+
+            if os.path.exists(notice_path):
+                mb_size = os.path.getsize(notice_path) / (1024 * 1024)
+                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+                bid_details[node_idx]["files_info"][new_file_index] = {
+                    "file_name": notice_filename,
+                    "sanitized_file_name": notice_filename,
+                    "file_url": notice_filename,
+                    "file_size": f"{mb_size:.5f} MB",
+                    "md5_hash": notice_hash,
+                    "iconverted": 0
+                }
+            else:
+                print("Notice PDF was not created — no tables matched, skipping dictionary update")
+        file_links = live_tree.xpath("//div[contains(@class,'offcanvas-bid-item')]//div[@class='bid-full-details']//a[not(contains(@href,'mailto:'))]")
+        print(len(file_links))
+
+        
         if not file_links:
             continue
-        print(len(file_links))
-        # If any one link is found we make a dictionary         
-        bid_details[node_idx] = {
-        "bid_no": bid_no,
-        "bid_title": bid_title,          
-        "bid_due_date": formatted_date,        
-        "agency_name": module_name,
-        "files_info": {}
-    }
-    
+        
+     
         for file_idx, file_link in enumerate(file_links, start = 1):
             file_url = file_link.get("href","").strip()
-            download_name = file_url.split("/")[-1].strip()
+            file_url = urljoin("https://www.venangocountypa.gov/",file_url)
+            file_url = quote(file_url,safe="/:?&=#%")
             
+            download_name = file_url.split("/")[-1]
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
             # create a session of database to check for duplication of hash and kill the session immediately
@@ -136,10 +182,8 @@ with SB (
             except Exception as e:
                 print(f"Session creation failed {e}")
                 continue
-            
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-            file_url = urljoin("https://www.arlingtonma.gov/",file_url)
-            file_url = quote(file_url, safe=":/?=&%")
+            
             file = download_files(sb = sb,
                                   file_url=file_url,
                                   script_directory=script_directory,
@@ -148,7 +192,9 @@ with SB (
                                   file_hash=file_hash,
                                   )
             bid_details[node_idx]["files_info"].update(file)
-
+        canvas_close_button = "//div[contains(@class,'offcanvas-bid-item')]//button[@class='btn-close']"
+        sb.hover_and_click(hover_selector=canvas_close_button, click_selector=canvas_close_button)
+        sb.sleep(5)
     has_downloads = any(
         bid["files_info"]
         for key, bid in bid_details.items()
@@ -166,7 +212,6 @@ with SB (
 
         print(f"JSON saved to: {json_path}")
         
-
         bid_counts = extract_from_json_and_insert(
             json_path=json_path,
             db_url=smi_data_url,
@@ -199,13 +244,14 @@ with SB (
         )
 
         update_value(
-                db_url=smi_record_url,
-                query="UPDATE tbl_smirecord SET baseURL = :baseURL_value, brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-                new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value" : main_url},
-                condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                )
+                    db_url=smi_record_url, 
+                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
+                    "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
+                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                    )
         delete_files_in_directory(download_path)
-
+    
         print("Scraping Successful")
 
     

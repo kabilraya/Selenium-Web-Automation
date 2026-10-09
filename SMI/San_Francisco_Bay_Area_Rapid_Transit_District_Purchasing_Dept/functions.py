@@ -107,7 +107,7 @@ def download_files(sb, file_button, script_directory,download_path,file_index, f
 
         if mb_size > 50:
             split_files = split_pdf(file_path=file_path)
-
+             
             #this return a list of tuple [(file_name, size_in_mb, path)].
             # So we iterate over and update the file = {} with proper indexing
 
@@ -145,7 +145,7 @@ def download_files(sb, file_button, script_directory,download_path,file_index, f
     
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
-    timeout = 180
+    timeout = 600
     poll_interval = 0.5
     deadline = time.time() + timeout
     actual_file_name = None

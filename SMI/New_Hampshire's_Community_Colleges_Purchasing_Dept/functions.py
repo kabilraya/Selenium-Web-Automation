@@ -10,31 +10,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
-import re
-import requests
-import gdown
-def is_direct_download(url, session=None):
-    req = session or requests
-    try:
-        resp = req.head(url, allow_redirects=True, timeout=10)
 
-        # some servers don't implement HEAD properly — fall back to GET
-        if resp.status_code >= 400 or not resp.headers.get('Content-Type'):
-            resp = req.get(url, stream=True, timeout=10)
-            resp.close()
-
-        content_type = resp.headers.get('Content-Type', '').lower()
-        content_disposition = resp.headers.get('Content-Disposition', '').lower()
-
-        if 'attachment' in content_disposition:
-            return True   
-        if content_type and 'text/html' not in content_type:
-            return True   
-
-        return False  
-
-    except requests.RequestException:
-        return False
 
 _MONTHS = (
     r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
@@ -136,8 +112,10 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     downloaded_files_dir = os.path.join(script_directory, "downloaded_files")
     os.makedirs(downloaded_files_dir, exist_ok=True)
     before_files = set(os.listdir(downloaded_files_dir))
-    sb.execute_script("window.open(arguments[0],'_blank');",file_url)
-    
+    sb.execute_script("window.open(arguments[0], '_blank');",file_url)
+    sb.sleep(5)
+    sb.switch_to_window(sb.driver.window_handles[-1])
+
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
     timeout = 180
@@ -149,9 +127,9 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
         current_files = set(os.listdir(downloaded_files_dir))
         new_files = current_files - before_files
         completed = [
-                                    f for f in new_files
-                                    if not f.lower().endswith(partial_exts) and not f.startswith(".")
-                                ]
+                            f for f in new_files
+                            if not f.lower().endswith(partial_exts) and not f.startswith(".")
+                        ]
 
         if completed:
             completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)

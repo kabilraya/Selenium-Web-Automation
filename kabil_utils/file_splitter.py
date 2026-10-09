@@ -34,7 +34,7 @@ def get_pdf_size_with_pages(pdf_writer):
         return os.path.getsize(temp_file.name)
 
 
-def split_pdf(file_path: str, max_size_mb: int = 50, max_chunks: int = 10) -> list:
+def split_pdf(file_path: str, max_size_mb: int = 50, max_chunks: int = 30) -> list:
     """
     Splits a PDF file into multiple smaller PDF files based on a given file path.
     Stops at max_chunks and puts remaining pages in the final chunk.
