@@ -108,13 +108,7 @@ with SB (
 
         print(f"Bid Title: {bid_title}\nBid No.:{bid_no}\nBid Due Date: {formatted_date}")  
     
-        bid_details[node_idx] = {
-                        "bid_no": bid_no,
-                        "bid_title": bid_title,          
-                        "bid_due_date": formatted_date,        
-                        "agency_name": module_name,
-                        "files_info": {}
-                    }
+        
         
         directed_link = node.xpath("./td[4]/a")[0].get("href","").strip()
         directed_link = urljoin("https://www.columbiacountyfla.com/",directed_link)
@@ -123,7 +117,34 @@ with SB (
         live_tree = html.fromstring(sb.get_page_source())
         sb.sleep(2)
         file_links = live_tree.xpath("//h3[contains(normalize-space(),'Bid Documents')]/following-sibling::a[contains(@class,'pdf') and not(contains(normalize-space(),'Register for Bid'))]")
+        
+        bid_notice_link = live_tree.xpath("//h3[contains(normalize-space(),'Bid Documents')]/following-sibling::a[contains(normalize-space(),'Register for Bid')]")
+        bid_notice_link = bid_notice_link[0].get("href","").strip()
+        bid_notice_link = urljoin("https://www.columbiacountyfla.com/",bid_notice_link)
+        sb.uc_open_with_reconnect(bid_notice_link)
+        sb.sleep(5)
+        sb.type("//input[@id='txtName']","Sarah Vine")
+        sb.type("//input[@id='txtCompany']","MGBids.com")
+        sb.type("//input[@id='txtAddress1']","4622 Cedar Avenue Suite 213")
+        sb.type("//input[@id='txtState']","NC")
+        sb.type("//input[@id='txtZip']","28403")
+        sb.type("//input[@id='txtPhone']","(202) 280-7019")
+        sb.type("//input[@id='txtEmail']","Sarah.vine@mgbids.com")
+        sb.hover_and_click(hover_selector = "//a[@id='btnSubmit']", click_selector = "//a[@id='btnSubmit']")
+        sb.sleep(5)
+        live_tree = html.fromstring(sb.get_page_source())
+        spec_link = live_tree.xpath("//a[@id='MainContent_lnkDownload']")
+        file_links.extend(spec_link)
+        if not file_links:
+            continue
         print(len(file_links))
+        bid_details[node_idx] = {
+                                "bid_no": bid_no,
+                                "bid_title": bid_title,          
+                                "bid_due_date": formatted_date,        
+                                "agency_name": module_name,
+                                "files_info": {}
+                            }
         for file_idx, file_link in enumerate(file_links, start = 1):
             file_url = file_link.get("href","").strip()
             file_url = urljoin("https://www.columbiacountyfla.com/",file_url)
@@ -148,6 +169,7 @@ with SB (
                                   download_path=download_path,
                                   file_index=new_file_index,
                                   file_hash=file_hash,
+                                  
             )
             bid_details[node_idx]["files_info"].update(file)
         
@@ -168,46 +190,46 @@ with SB (
 
         print(f"JSON saved to: {json_path}")
         
-        # bid_counts = extract_from_json_and_insert(
-        #     json_path=json_path,
-        #     db_url=smi_data_url,
-        #     region_name=region_name,
-        #     endpoint_url=endpoint_url,
-        #     aws_access_key_id=aws_access_key_id,
-        #     aws_secret_access_key=aws_secret_access_key,
-        # )
-        # end_time = time.perf_counter()
-        # total_execution_time = round((end_time - start_time) / 60)
-        # total_bids = bid_counts["total_bid"]
-        # total_new_bid = bid_counts["total_new_bid"]
-        # total_new_bid_file = bid_counts["total_new_bid_file"]
-        # print(f"Total bids: {total_bids}")
-        # print(f"Total new bids: {total_new_bid}")
-        # print(f"Total new bid files: {total_new_bid_file}")
-        # print(f"Process took around {total_execution_time}")
+        bid_counts = extract_from_json_and_insert(
+            json_path=json_path,
+            db_url=smi_data_url,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+        )
+        end_time = time.perf_counter()
+        total_execution_time = round((end_time - start_time) / 60)
+        total_bids = bid_counts["total_bid"]
+        total_new_bid = bid_counts["total_new_bid"]
+        total_new_bid_file = bid_counts["total_new_bid_file"]
+        print(f"Total bids: {total_bids}")
+        print(f"Total new bids: {total_new_bid}")
+        print(f"Total new bid files: {total_new_bid_file}")
+        print(f"Process took around {total_execution_time}")
 
-        # #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
 
-        # session, _ = create_database_session(database_url=smi_record_url)
-        # insert_into_record_db(
-        #     session = session,
-        #     ecgain=ecgains,
-        #     module_name=module_name.split(".")[0],
-        #     total_bid= total_bids,
-        #     total_new_bid=total_new_bid,
-        #     total_new_bid_files=total_new_bid_file,
-        #     timeelapsed=total_execution_time
-        # )
+        session, _ = create_database_session(database_url=smi_record_url)
+        insert_into_record_db(
+            session = session,
+            ecgain=ecgains,
+            module_name=module_name.split(".")[0],
+            total_bid= total_bids,
+            total_new_bid=total_new_bid,
+            total_new_bid_files=total_new_bid_file,
+            timeelapsed=total_execution_time
+        )
 
-        # update_value(
-        #             db_url=smi_record_url,
-        #             query="UPDATE tbl_smirecord SET baseURL = :baseURL_value, brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-        #             new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value":main_url},
-        #             condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-        #             )
-        # delete_files_in_directory(download_path)
+        update_value(
+                    db_url=smi_record_url,
+                    query="UPDATE tbl_smirecord SET baseURL = :baseURL_value, brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value":main_url},
+                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                    )
+        delete_files_in_directory(download_path)
     
-        # print("Scraping Successful")
+        print("Scraping Successful")
 
     
 

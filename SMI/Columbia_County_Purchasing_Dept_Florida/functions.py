@@ -104,7 +104,9 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
                 "iconverted" : iconverted
             }
             file_index += 1 
-
+    
+        
+       
     #we take the current window handle id to return to this handle
     #Here "main_window" is the main tab we open at the beginning of the scraping
     main_window =  sb.driver.current_window_handle

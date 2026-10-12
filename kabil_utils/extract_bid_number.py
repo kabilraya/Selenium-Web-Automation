@@ -1,17 +1,15 @@
 import re
 
-PREFIXES = r"(?:BID|RFP|RFQ|RFQual\w*|RFI|RFB|ITB|IFB|IFQ|ITQ|SOLICITATION|PROPOSAL|QUOTE | FP | DPW)"
-LABEL = rf"(?:{PREFIXES}\b\s*(?:NO\.?|NUMBER|#)?\s*[:#\-]?\s*)?"   # optional prefix, kept in the result
-
+PREFIXES = r"(?:BID|RFP|RFQ|RFQual\w*|RFI|RFB|ITB|IFB|IFQ|ITQ|SOLICITATION|PROPOSAL|QUOTE|FP|DPW|(?-i:OF))"
+LABEL = rf"(?:{PREFIXES}\b\s*(?:NO\.?|NUMBER|#)?\s*[:#\-]?\s*)?"
 
 LEADING_RE = re.compile(
     rf"^\s*({LABEL}[A-Z]{{0,4}}\d[\w\-/.]*)",
     re.I,
 )
 
-
 ANYWHERE_RE = re.compile(
-    rf"(?<![\w/])({LABEL}[A-Z]{{0,4}}\d{{2,4}}(?:-[A-Z0-9]+)+)(?![\w/])",
+    rf"(?<![\w/])({LABEL}[A-Z]{{0,4}}\d{{2,4}}(?:[-.][A-Z0-9]+)+)(?![\w/])",
     re.I,
 )
 
@@ -22,4 +20,4 @@ def extract_bid_no(bid_title: str) -> str:
     if m:
         return re.sub(r"\s+", " ", m.group(1)).rstrip(".-/ ")
 
-    return title[:25].strip()          # no number found, fall back to the start of the title
+    return title[:25].strip()

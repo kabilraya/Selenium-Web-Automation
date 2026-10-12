@@ -11,8 +11,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
 
-from kabil_utils.md5_generator import generate_md5_hash
-
 
 _MONTHS = (
     r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
@@ -80,12 +78,12 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
         if mb_size > 50:
             split_files = split_pdf(file_path=file_path)
-            
+
             #this return a list of tuple [(file_name, size_in_mb, path)].
             # So we iterate over and update the file = {} with proper indexing
 
             for file_name, size_in_mb, path in split_files:
-                
+
                 file[file_index] = {
                     "file_name" : file_name,
                     "sanitized_file_name" : file_name,
@@ -120,7 +118,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
-    timeout = 300
+    timeout = 180
     poll_interval = 0.5
     deadline = time.time() + timeout
     actual_file_name = None
@@ -128,7 +126,10 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     while time.time() < deadline:
         current_files = set(os.listdir(downloaded_files_dir))
         new_files = current_files - before_files
-        completed = [f for f in new_files if not f.lower().endswith(partial_exts)]
+        completed = [
+                            f for f in new_files
+                            if not f.lower().endswith(partial_exts) and not f.startswith(".")
+                        ]
 
         if completed:
             completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)
