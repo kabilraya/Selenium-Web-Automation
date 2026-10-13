@@ -118,7 +118,7 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
 
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
-    timeout = 180
+    timeout = 600
     poll_interval = 0.5
     deadline = time.time() + timeout
     actual_file_name = None
