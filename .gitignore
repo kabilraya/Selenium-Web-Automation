@@ -21,3 +21,4 @@ models/
 *.pdf
 /bid_date_available_in_file
 /no_bid_date_in_file
+models_qwen

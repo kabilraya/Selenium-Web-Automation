@@ -23,6 +23,54 @@ from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
 import re
 #make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
 start_time = time.perf_counter()
 
 script_path = os.path.abspath(__file__)
@@ -81,14 +129,12 @@ with SB (
     for node_idx, node in enumerate(project_nodes,start=1):
         
 
-        bid_title = node.xpath("./td[2]/a")[0].text_content().strip()
-        bid_no = node.xpath("./td[1]")[0].text_content().strip()
-        if not bid_no:
-            print("The bid_no is no specified in the table")
-            bid_no = bid_title[:25].strip()
+        bid_title = node.xpath("./td[1]/a")[0].text_content().strip()
+        
+        bid_no = bid_title[:25].strip()
 
         
-        bid_due_date = node.xpath("./td[4]")[0].text_content().strip()
+        bid_due_date = node.xpath("./td[3]")[0].text_content().strip()
         
         formatted_date = regex_date_filter(bid_due_date)
         date_obj = None
@@ -104,7 +150,7 @@ with SB (
         if date_obj and date_obj <= datetime.today().date():
             continue
         print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
-        directed_links = node.xpath("./td[2]/a")
+        directed_links = node.xpath("./td[1]/a")
         if not directed_links:
             continue
         bid_details[node_idx] = {
@@ -116,7 +162,7 @@ with SB (
         }
         for directed_link in directed_links:
             directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://www.carvercountymn.gov/",directed_url)
+            directed_url = urljoin("https://www.janesvillewi.gov/",directed_url)
             sb.uc_open_with_reconnect(directed_url)
             sb.sleep(3)
             sb.uc_gui_click_captcha()
@@ -150,7 +196,7 @@ with SB (
                             xpath=info_table,
                             tree=tree,
                             output_path=notice_path,                               
-                            base_url="https://www.carvercountymn.gov/",
+                            base_url="https://www.janesvillewi.gov/",
                 )
     
                 if os.path.exists(notice_path):
@@ -174,7 +220,7 @@ with SB (
             
             for file_idx, file_link in enumerate(file_links, start = 1):
                 file_url = file_link.get("href","").strip()
-                file_url = urljoin("https://www.carvercountymn.gov/",file_url)
+                file_url = urljoin("https://www.janesvillewi.gov/",file_url)
                 file_url = quote(file_url,safe="/:?&=#%")
                 # if not is_downloadable_file(file_url):
                 #     print("Not a downloadable link so skipping it")
