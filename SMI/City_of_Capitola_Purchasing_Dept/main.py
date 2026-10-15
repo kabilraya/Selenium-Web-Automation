@@ -13,7 +13,7 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files, regex_date_filter, save_nodes_as_pdf
+from functions import download_files, regex_date_filter, save_nodes_as_pdf,is_downloadable_file
 from urllib.parse import urljoin,quote
 from datetime import datetime
 from model.smi_model import SMI
@@ -23,6 +23,54 @@ from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
 import re
 #make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
 start_time = time.perf_counter()
 
 script_path = os.path.abspath(__file__)
@@ -79,18 +127,18 @@ with SB (
     }
     seen_bid_no = set()
     for node_idx, node in enumerate(project_nodes,start=1):
-        bid_title = node.xpath("./div[1]/span[1]")[0].text_content().strip()
         bid_due_date = node.xpath("./div[2]/div[2]/span[2]")[0].text_content().strip()
         if bid_due_date.lower() == "upon contract":
-            print(f"{bid_title} is Upon Contract so skipping")
+            print("Skipping Upon Contract")
             continue
-        
-        pattern = re.compile(r'\b(RFA|RFP|RFQ|RFB|RFI)[-:\s]*([0-9]{2,4}(?:-[A-Za-z0-9]+)*)')
-        match = re.search(r'\b(RFA|RFP|RFQ|RFB|RFI)[-:\s]*([0-9]{2,4}(?:-[A-Za-z0-9]+)*)', bid_title)
 
-        bid_no = f"{match.group(1)}-{match.group(2)}" if match else bid_title[:25]
+        bid_title = node.xpath("./div[1]/span[1]")[0].text_content().strip()
+        bid_no = bid_title[:25].strip()
 
-        
+        if bid_no in seen_bid_no:
+            print(f"\n\n{bid_no} is repeated so skipping this\n\n")
+            continue
+        seen_bid_no.add(bid_no)
         
         formatted_date = regex_date_filter(bid_due_date)
         date_obj = None
@@ -105,7 +153,7 @@ with SB (
                     continue
         if date_obj and date_obj <= datetime.today().date():
             continue
-        print(f"Bid Title: {bid_title} \nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
+        print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
         directed_links = node.xpath("./div[1]/span[1]/a")
         if not directed_links:
             continue
@@ -118,25 +166,17 @@ with SB (
         }
         for directed_link in directed_links:
             directed_url = directed_link.get("href","").strip()
-            directed_url = urljoin("https://www.windsorct.gov/",directed_url)
-            sb.execute_script("window.open(arguments[0],'_blank');",directed_url)
+            directed_url = urljoin("https://www.cityofcapitola.gov/",directed_url)
+            sb.uc_open_with_reconnect(directed_url)
             sb.sleep(3)
-            sb.switch_to_window(sb.driver.window_handles[-1])
-            
-            sb.type("//label[contains(normalize-space(),'Contact Name')]/following-sibling::div/input[2]","Kabil Raya")
-            company_field = "//label[contains(normalize-space(),'Company Name')]/following-sibling::div/input[2]"
-            sb.type(company_field, "Planet Bids")
-            
-            sb.type("//label[contains(normalize-space(),'Phone Number')]/following-sibling::div/input[2]","9803382321")
-            sb.type("//label[contains(normalize-space(),'Email Address')]/following-sibling::div/input[2]","roykabil99@gmail.com")
-            
-            sb.sleep(5)
-            sb.hover_and_click(hover_selector="//span[contains(normalize-space(),'Submit')]",click_selector="//span[contains(normalize-space(),'Submit')]")
+            sb.uc_gui_click_captcha()
+            sb.sleep(3)
+            sb.switch_to_default_content()
+            sb.sleep(3)
             page_source = sb.get_page_source()
-            sb.sleep(5)
+            sb.sleep(2)
             tree = html.fromstring(page_source)
-
-            notice_filename = f"{bid_no.replace(' ','_').replace('#','')}_bid_notice.pdf"
+            notice_filename = re.sub(r'[\\/:*?"<>|&#\s]+', "_", bid_title).strip("._") + "_bid_notice.pdf"
             notice_path = os.path.join(download_path, notice_filename)
             os.makedirs(download_path, exist_ok=True)
 
@@ -160,7 +200,7 @@ with SB (
                             xpath=info_table,
                             tree=tree,
                             output_path=notice_path,                               
-                            base_url="https://www.windsorct.gov/",
+                            base_url="https://www.cityofcapitola.gov/",
                 )
     
                 if os.path.exists(notice_path):
@@ -184,15 +224,26 @@ with SB (
             
             for file_idx, file_link in enumerate(file_links, start = 1):
                 file_url = file_link.get("href","").strip()
-                file_url = urljoin("https://www.windsorct.gov/",file_url)
+                file_url = urljoin("https://www.cityofcapitola.gov/",file_url)
                 file_url = quote(file_url,safe="/:?&=#%")
-                print(file_url)
+                # if not is_downloadable_file(file_url):
+                #     print("Not a downloadable link so skipping it")
+                #     continue
 
                 download_name = file_url.split("/")[-1]
                 print(download_name)
                 file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
                 # create a session of database to check for duplication of hash and kill the session immediately
-                
+                try:
+                    session, _ = create_database_session(database_url=smi_data_url)
+                    is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                    session.close()
+                    if is_duplicate_hash:
+                        print("Hash Duplication found")
+                        continue
+                except Exception as e:
+                    print(f"Session creation failed {e}")
+                    continue
                 new_file_index = len(bid_details[node_idx]["files_info"]) + 1
                 
                 file = download_files(sb = sb,
@@ -220,47 +271,47 @@ with SB (
 
         print(f"JSON saved to: {json_path}")
 
-        # bid_counts = extract_from_json_and_insert(
-        #     json_path=json_path,
-        #     db_url=smi_data_url,
-        #     region_name=region_name,
-        #     endpoint_url=endpoint_url,
-        #     aws_access_key_id=aws_access_key_id,
-        #     aws_secret_access_key=aws_secret_access_key,
-        # )
-        # end_time = time.perf_counter()
-        # total_execution_time = round((end_time - start_time) / 60)
-        # total_bids = bid_counts["total_bid"]
-        # total_new_bid = bid_counts["total_new_bid"]
-        # total_new_bid_file = bid_counts["total_new_bid_file"]
-        # print(f"Total bids: {total_bids}")
-        # print(f"Total new bids: {total_new_bid}")
-        # print(f"Total new bid files: {total_new_bid_file}")
-        # print(f"Process took around {total_execution_time}")
+        bid_counts = extract_from_json_and_insert(
+            json_path=json_path,
+            db_url=smi_data_url,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+        )
+        end_time = time.perf_counter()
+        total_execution_time = round((end_time - start_time) / 60)
+        total_bids = bid_counts["total_bid"]
+        total_new_bid = bid_counts["total_new_bid"]
+        total_new_bid_file = bid_counts["total_new_bid_file"]
+        print(f"Total bids: {total_bids}")
+        print(f"Total new bids: {total_new_bid}")
+        print(f"Total new bid files: {total_new_bid_file}")
+        print(f"Process took around {total_execution_time}")
 
-        # #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
 
-        # session, _ = create_database_session(database_url=smi_record_url)
-        # insert_into_record_db(
-        #     session = session,
-        #     ecgain=ecgains,
-        #     module_name=module_name.split(".")[0],
-        #     total_bid= total_bids,
-        #     total_new_bid=total_new_bid,
-        #     total_new_bid_files=total_new_bid_file,
-        #     timeelapsed=total_execution_time
-        # )
+        session, _ = create_database_session(database_url=smi_record_url)
+        insert_into_record_db(
+            session = session,
+            ecgain=ecgains,
+            module_name=module_name.split(".")[0],
+            total_bid= total_bids,
+            total_new_bid=total_new_bid,
+            total_new_bid_files=total_new_bid_file,
+            timeelapsed=total_execution_time
+        )
 
-        # update_value(
-        #             db_url=smi_record_url, 
-        #             query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
-        #             "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
-        #             new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
-        #             condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-        #             )
-        # delete_files_in_directory(download_path)
+        update_value(
+                    db_url=smi_record_url, 
+                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
+                    "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
+                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                    )
+        delete_files_in_directory(download_path)
     
-        # print("Scraping Successful")
+        print("Scraping Successful")
 
     
 
