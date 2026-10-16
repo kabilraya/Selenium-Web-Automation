@@ -81,7 +81,7 @@ def extract_from_json_and_add_to_db(
                     )
                     if is_duplicate:
                         print(
-                            "Hash Duplication Fount"
+                            "Hash Duplication Found.. Skipping"
                         )
                         continue
                     
