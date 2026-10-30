@@ -149,10 +149,11 @@ def download_files(sb,  script_directory,download_path,file_index, file_hash,fil
     sb.sleep(5)
     
     sb.switch_to_window(sb.driver.window_handles[-1])
+    sb.sleep(5)
     sb.uc_gui_click_captcha()
-    sb.sleep(3)
+    sb.sleep(5)
     sb.switch_to_default_content()
-
+    sb.sleep(5)
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
     timeout = 180

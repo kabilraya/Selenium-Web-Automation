@@ -107,7 +107,7 @@ with SB (
         print(f"Bid Title: {bid_title}\nBid No.:{bid_no}")
         
         
-        file_links = node.xpath("./div/div[2]/a")
+        file_links = node.xpath(".//a[not(contains(@href,'tel:')) and not(contains(@href,'.php'))]")
         if not file_links:
             continue
         
