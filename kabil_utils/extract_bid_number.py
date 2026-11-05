@@ -1,20 +1,22 @@
 import re
 
-PREFIXES = r"(?:BID|RFP|RFQ|RFQual\w*|RFI|RFB|ITB|IFB|IFQ|ITQ|SOLICITATION|PROPOSAL|QUOTE|FP|DPW|SI-CUCF|PON|Bid|(?-i:OF))"
+PREFIXES = r"(?:BID|RFP|RFQ|RFQual\w*|RFI|RFB|ITB|IFB|IFQ|ITQ|SOLICITATION|PROPOSAL|QUOTE|FP|DPW|SI-CUCF|PON|Bid|RFQu|(?-i:OF))"
 LABEL = rf"(?:{PREFIXES}\b\s*(?:NO\.?|NUMBER|#)?\s*[:#\-]?\s*)?"
 
-NUM = r"[A-Z]{0,4}\d[A-Z\d]*(?:[-/.](?=[A-Z\d]*\d)[A-Z\d]+)*"
+# A segment must contain a digit, OR be 1-4 letters followed by a segment with a digit (e.g. "BT" in 20-BT-026)
+SEG = r"(?=[A-Z\d]*\d|[A-Z]{1,4}[-/.][A-Z\d]*\d)[A-Z\d]+"
+
+NUM = rf"[A-Z]{{0,4}}\d[A-Z\d]*(?:[-/.]{SEG})*"
 
 LEADING_RE = re.compile(rf"^\s*({LABEL}{NUM})", re.I)
 
-# NEW: letter-code prefix + hyphen, e.g. PS-2026-03, ED-2026-01
 PREFIXED_RE = re.compile(
-    r"(?<![\w/])([A-Z]{1,5}-\d{2,4}(?:[-.](?=[A-Z\d]*\d)[A-Z\d]+)+)(?![\w/])",
+    rf"(?<![\w/])([A-Z]{{1,5}}-\d{{2,4}}(?:[-.]{SEG})+)(?![\w/])",
     re.I,
 )
 
 ANYWHERE_RE = re.compile(
-    rf"(?<![\w/])({LABEL}[A-Z]{{0,4}}\d{{2,4}}(?:[-.](?=[A-Z\d]*\d)[A-Z\d]+)+)(?![\w/])",
+    rf"(?<![\w/])({LABEL}[A-Z]{{0,4}}\d{{2,4}}(?:[-.]{SEG})+)(?![\w/])",
     re.I,
 )
 

@@ -17,29 +17,24 @@ from urllib.parse import urljoin
 import markdown as md_lib
 from weasyprint import HTML, CSS
 import requests
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "*/*",
-}
+
 
 def is_downloadable_file(url):
     try:
-        resp = requests.head(url, allow_redirects=True, timeout=10, headers=HEADERS)
+        resp = requests.head(url, allow_redirects=True, timeout=10)
         content_type = resp.headers.get('Content-Type', '').lower()
         content_disposition = resp.headers.get('Content-Disposition', '').lower()
-        status = resp.status_code
 
-        if status >= 400 or not content_type:
-            resp = requests.get(url, stream=True, timeout=10, headers=HEADERS)
+        if resp.status_code >= 400 or not content_type:
+            resp = requests.get(url, stream=True, timeout=10)
             content_type = resp.headers.get('Content-Type', '').lower()
             content_disposition = resp.headers.get('Content-Disposition', '').lower()
-            status = resp.status_code
             resp.close()
 
-        # DEBUG — leave this in until it's fixed
-        print(f"[{status}] {url} -> content_type={content_type!r} disposition={content_disposition!r}")
-
+        # Only inspect the disposition TYPE (the part before the first ';'),
+        # never the whole header — the filename can legitimately contain
+        # the word "attachment" (e.g. "Attachment 5-Davis-Bacon-WD.txt"),
+        # which would otherwise false-positive a substring check.
         disposition_type = content_disposition.split(';')[0].strip()
         if disposition_type == 'attachment':
             return True
@@ -50,8 +45,7 @@ def is_downloadable_file(url):
 
         return True
 
-    except requests.RequestException as e:
-        print(f"RequestException for {url}: {e}")
+    except requests.RequestException:
         return False
 
 DEFAULT_EXCLUDE_XPATHS = [
@@ -202,7 +196,7 @@ def santitize_file_name(url:str) -> str:
     return f"{root}{ext}"
 
 
-def download_files(sb, file_url, script_directory,download_path,file_index, file_hash):
+def download_files(sb,  script_directory,download_path,file_index, file_hash,file_url = None):
     file = {}
     def process_single_file(file_path:str):
         #Take a single file from /download
@@ -267,7 +261,10 @@ def download_files(sb, file_url, script_directory,download_path,file_index, file
     while time.time() < deadline:
         current_files = set(os.listdir(downloaded_files_dir))
         new_files = current_files - before_files
-        completed = [f for f in new_files if not f.lower().endswith(partial_exts)]
+        completed = [
+                            f for f in new_files
+                            if not f.lower().endswith(partial_exts) and not f.startswith(".")
+                        ]
 
         if completed:
             completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)

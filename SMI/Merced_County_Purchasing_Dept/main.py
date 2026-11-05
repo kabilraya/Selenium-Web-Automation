@@ -21,8 +21,56 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+import re
 #make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
 start_time = time.perf_counter()
 
 script_path = os.path.abspath(__file__)
@@ -85,6 +133,7 @@ with SB (
             continue
 
         bid_title = node.xpath("./div[1]/span[1]")[0].text_content().strip()
+        
         bid_no = bid_title[:25].strip()
         if bid_no in seen_bid_no:
             print(f"\n\n{bid_no} is repeated so skipping this\n\n")
@@ -127,7 +176,7 @@ with SB (
             page_source = sb.get_page_source()
             sb.sleep(2)
             tree = html.fromstring(page_source)
-            notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
+            notice_filename = re.sub(r'[\\/:*?"<>|&#\s]+', "_", bid_title).strip("._") + "_bid_notice.pdf"
             notice_path = os.path.join(download_path, notice_filename)
             os.makedirs(download_path, exist_ok=True)
 
@@ -177,7 +226,9 @@ with SB (
                 file_url = file_link.get("href","").strip()
                 file_url = urljoin("https://www.countyofmerced.com/",file_url)
                 file_url = quote(file_url,safe="/:?&=#%")
-                
+                # if not is_downloadable_file(file_url):
+                #     print("Not a downloadable link so skipping it")
+                #     continue
 
                 download_name = file_url.split("/")[-1]
                 print(download_name)
@@ -220,47 +271,47 @@ with SB (
 
         print(f"JSON saved to: {json_path}")
 
-        # bid_counts = extract_from_json_and_insert(
-        #     json_path=json_path,
-        #     db_url=smi_data_url,
-        #     region_name=region_name,
-        #     endpoint_url=endpoint_url,
-        #     aws_access_key_id=aws_access_key_id,
-        #     aws_secret_access_key=aws_secret_access_key,
-        # )
-        # end_time = time.perf_counter()
-        # total_execution_time = round((end_time - start_time) / 60)
-        # total_bids = bid_counts["total_bid"]
-        # total_new_bid = bid_counts["total_new_bid"]
-        # total_new_bid_file = bid_counts["total_new_bid_file"]
-        # print(f"Total bids: {total_bids}")
-        # print(f"Total new bids: {total_new_bid}")
-        # print(f"Total new bid files: {total_new_bid_file}")
-        # print(f"Process took around {total_execution_time}")
+        bid_counts = extract_from_json_and_insert(
+            json_path=json_path,
+            db_url=smi_data_url,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+        )
+        end_time = time.perf_counter()
+        total_execution_time = round((end_time - start_time) / 60)
+        total_bids = bid_counts["total_bid"]
+        total_new_bid = bid_counts["total_new_bid"]
+        total_new_bid_file = bid_counts["total_new_bid_file"]
+        print(f"Total bids: {total_bids}")
+        print(f"Total new bids: {total_new_bid}")
+        print(f"Total new bid files: {total_new_bid_file}")
+        print(f"Process took around {total_execution_time}")
 
-        # #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
 
-        # session, _ = create_database_session(database_url=smi_record_url)
-        # insert_into_record_db(
-        #     session = session,
-        #     ecgain=ecgains,
-        #     module_name=module_name.split(".")[0],
-        #     total_bid= total_bids,
-        #     total_new_bid=total_new_bid,
-        #     total_new_bid_files=total_new_bid_file,
-        #     timeelapsed=total_execution_time
-        # )
+        session, _ = create_database_session(database_url=smi_record_url)
+        insert_into_record_db(
+            session = session,
+            ecgain=ecgains,
+            module_name=module_name.split(".")[0],
+            total_bid= total_bids,
+            total_new_bid=total_new_bid,
+            total_new_bid_files=total_new_bid_file,
+            timeelapsed=total_execution_time
+        )
 
-        # update_value(
-        #             db_url=smi_record_url, 
-        #             query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
-        #             "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
-        #             new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
-        #             condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-        #             )
-        # delete_files_in_directory(download_path)
+        update_value(
+                    db_url=smi_record_url, 
+                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
+                    "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
+                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                    )
+        delete_files_in_directory(download_path)
     
-        # print("Scraping Successful")
+        print("Scraping Successful")
 
     
 
