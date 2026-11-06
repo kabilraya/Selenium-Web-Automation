@@ -17,7 +17,7 @@ from functions import download_files,regex_date_filter
 from urllib.parse import urljoin,quote
 from datetime import datetime
 from model.smi_model import SMI
-from kabil_utils.vpn_required_db_insertion import extract_from_json_and_add_to_db
+from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.vpn_disconnet import disconnect_vpn
 from dotenv import load_dotenv
 from kabil_utils.record_data_insertion import insert_into_record_db
@@ -172,7 +172,16 @@ with SB (
             
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = file_name )
             # create a session of database to check for duplication of hash and kill the session immediately
-            
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                session.close()
+                if is_duplicate_hash:
+                    print("Hash Duplication found")
+                    continue
+            except Exception as e:
+                print(f"Session creation failed {e}")
+                continue
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
             sb.switch_to_default_content()
             sb.sleep(1)
@@ -211,9 +220,9 @@ with SB (
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
-        disconnect_vpn()
+        
         time.sleep(5)
-        bid_counts = extract_from_json_and_add_to_db(
+        bid_counts = extract_from_json_and_insert(
             json_path=json_path,
             db_url=smi_data_url,
             region_name=region_name,

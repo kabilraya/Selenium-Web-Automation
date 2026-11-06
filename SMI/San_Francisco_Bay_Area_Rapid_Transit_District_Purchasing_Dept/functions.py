@@ -145,7 +145,7 @@ def download_files(sb, file_button, script_directory,download_path,file_index, f
     
     #try downloading the file
     partial_exts = (".crdownload", ".part", ".tmp", ".download")
-    timeout = 600
+    timeout = 800
     poll_interval = 0.5
     deadline = time.time() + timeout
     actual_file_name = None
@@ -153,7 +153,10 @@ def download_files(sb, file_button, script_directory,download_path,file_index, f
     while time.time() < deadline:
         current_files = set(os.listdir(downloaded_files_dir))
         new_files = current_files - before_files
-        completed = [f for f in new_files if not f.lower().endswith(partial_exts)]
+        completed = [
+                                    f for f in new_files
+                                    if not f.lower().endswith(partial_exts) and not f.startswith(".")
+                                ]
 
         if completed:
             completed.sort(key=lambda f: os.path.getmtime(os.path.join(downloaded_files_dir, f)), reverse=True)
