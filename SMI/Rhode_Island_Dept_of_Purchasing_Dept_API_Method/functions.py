@@ -452,7 +452,7 @@ def download_files(sb, script_directory, download_path, file_index, file_hash,
                     "file_name": file_name,
                     "sanitized_file_name": file_name,
                     "file_url": file_name,
-                    "file_size": f"{size_in_mb:.2f} MB",
+                    "file_size": f"{size_in_mb:.6f} MB",
                     "md5_hash": file_hash,
                     "iconverted": iconverted,
                 }

@@ -1,0 +1,324 @@
+import os
+
+
+
+from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.by import By
+from seleniumbase import SB
+import sys
+import json
+from lxml import html
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..","..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import time
+from kabil_utils.get_env import get_env
+from kabil_utils.md5_generator import generate_md5_hash
+from kabil_utils.session_creator import create_database_session
+from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
+from functions import download_files, regex_date_filter, is_downloadable_file
+from urllib.parse import urljoin,quote
+from datetime import datetime
+from model.smi_model import SMI
+from kabil_utils.extract_and_insertion import extract_from_json_and_insert
+from kabil_utils.record_data_insertion import insert_into_record_db
+from kabil_utils.db_value_updater import update_value
+from kabil_utils.file_remover import delete_files_in_directory
+from kabil_utils.extract_bid_number import extract_bid_no
+from kabil_utils.extract_date_from_textblock import extract_raw_date
+import re
+from dotenv import load_dotenv
+#make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
+start_time = time.perf_counter()
+
+script_path = os.path.abspath(__file__)
+script_directory = os.path.dirname(script_path)
+env_path = os.path.join(script_directory,".env")
+load_dotenv()
+[
+    ecgains,
+    module_name,
+    main_url,
+    download_path,
+    server_path,
+    smi_data_url,
+    smi_record_url,
+    region_name,
+    endpoint_url,
+    aws_access_key_id,
+    aws_secret_access_key
+] = get_env(env_path)
+
+download_path=os.path.join(script_directory, "download")
+
+
+def cf_challenge_showing(sb):
+    """True while the Cloudflare 'Just a moment...' interstitial is on screen."""
+    title = sb.cdp.get_title().lower()
+    return "just a moment" in title or "security verification" in title
+
+
+def cdp_open(sb, url, first=False, retries=3):
+    """
+    Open `url` in CDP mode and clear the Cloudflare challenge if one appears.
+    first=True  -> activate CDP mode (do this ONCE per run, with the first URL)
+    first=False -> plain sb.cdp.open(url) for every later page
+    Raises RuntimeError if the challenge is still showing after all retries.
+    """
+    for attempt in range(1, retries + 1):
+        if first and attempt == 1:
+            sb.activate_cdp_mode(url)
+        else:
+            sb.cdp.open(url)
+        sb.cdp.sleep(4)
+
+        if not cf_challenge_showing(sb):
+            return
+
+        try:
+            sb.cdp.solve_captcha()
+        except Exception as e:
+            print(f"solve_captcha error: {type(e).__name__}: {e}")
+
+        for _ in range(8):                      # wait up to ~16s for it to clear
+            sb.cdp.sleep(2)
+            if not cf_challenge_showing(sb):
+                return
+        print(f"Still on the Cloudflare challenge (attempt {attempt}/{retries}): {url}")
+
+    sb.cdp.save_screenshot("cf_stuck.png")
+    raise RuntimeError(f"Cloudflare challenge not passed: {url}")
+
+
+with SB (
+    uc = True,
+    test = True,
+    
+    incognito = False,
+    undetectable= True,
+    
+    xvfb=True,
+    xvfb_metrics="1920,1080",
+    guest_mode=False,
+    disable_features = "ChromePDFViewer",
+    external_pdf = True,
+    locale = "en",
+) as sb:
+    # Listing page: a failure here is fatal, so let the RuntimeError propagate.
+    cdp_open(sb, main_url, first=True)
+    sb.cdp.sleep(3)
+    page_source = sb.cdp.get_page_source()
+    tree = html.fromstring(page_source)
+    project_nodes = tree.xpath("//table/tbody/tr")
+    
+    #Creating a top level directory which consists the top level infomation common for all the bids in one websites
+    bid_details = {
+    "ecgains": ecgains,
+    "module_name": module_name,
+    "base_url" : main_url,
+    "download_path" : download_path,
+    "server_path" : server_path
+    }
+    seen_bid_no = set()
+    for node_idx, node in enumerate(project_nodes,start=1):
+        
+
+        
+        bid_title = node.xpath("./td[7]")[0].text_content().strip()
+        bid_title = " ".join(bid_title.split())
+        bid_no = node.xpath("./td[1]/a")[0].text_content().strip()
+        
+        bid_due_date = node.xpath("./td[2]")[0].text_content().strip()
+        
+        
+        
+        formatted_date = regex_date_filter(bid_due_date)
+        date_obj = None
+        if formatted_date:
+            try:
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+            except ValueError as e:
+                try:
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                except ValueError as e:
+                    print(f"Date cannot be parsed with error {e}")
+                    continue
+        if date_obj and date_obj <= datetime.today().date():
+            continue
+        
+        print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
+        directed_link = node.xpath("./td[1]/a")[0].get("href","").strip()
+        directed_link = urljoin(main_url, directed_link)
+
+        # Detail page: skip this bid (instead of killing the run) if the challenge isn't cleared.
+        try:
+            cdp_open(sb, directed_link)
+        except RuntimeError as e:
+            print(e)
+            continue
+        sb.cdp.sleep(3)
+        live_tree = html.fromstring(sb.cdp.get_page_source())
+
+        file_links = live_tree.xpath("//table/tbody//a")
+        
+        print(len(file_links))
+        if not file_links:
+            continue
+        bid_details[node_idx] = {
+            "bid_no": bid_no,
+            "bid_title": bid_title,          
+            "bid_due_date": formatted_date,        
+            "agency_name": module_name,
+            "files_info": {}
+        }
+        
+        
+        
+        
+        
+        for file_idx, file_link in enumerate(file_links, start = 1):
+            file_url = file_link.get("href","").strip()
+            
+            file_url = urljoin(main_url,file_url)
+            file_url = quote(file_url,safe="/:?&=#%")
+            
+            download_name = file_url.split("/")[-1]
+            print(download_name)
+            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+            # create a session of database to check for duplication of hash and kill the session immediately
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                session.close()
+                if is_duplicate_hash:
+                    print("Hash Duplication found")
+                    continue
+            except Exception as e:
+                print(f"Session creation failed {e}")
+                continue
+            new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+
+            # download_files() (functions.py, unchanged) drives Chrome through WebDriver
+            # (window handles, switch_to_window, close), which does not exist while CDP
+            # mode is active. So reconnect WebDriver only for the download, then
+            # disconnect again so the next page is opened in CDP mode.
+            sb.connect()
+            try:
+                file = download_files(sb = sb,
+                                      file_url=file_url,
+                                      script_directory=script_directory,
+                                      download_path=download_path,
+                                      file_index=new_file_index,
+                                      file_hash=file_hash)
+            finally:
+                sb.disconnect()
+            bid_details[node_idx]["files_info"].update(file)
+
+    has_downloads = any(
+        bid["files_info"]
+        for key, bid in bid_details.items()
+        if isinstance(key, int)
+        )
+    
+    if not has_downloads:
+        print("No new files downloaded. Skipping JSON creation and database insertion.")
+    else:
+        json_path = os.path.join(script_directory, "projects.json")
+
+        with open(json_path, "w", encoding="utf-8") as json_file:
+            
+            json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
+
+        print(f"JSON saved to: {json_path}")
+
+        # (DB insertion / cleanup left commented out, exactly as in your last version.
+        #  Uncomment when you are ready to write to the databases.)
+        bid_counts = extract_from_json_and_insert(
+            json_path=json_path,
+            db_url=smi_data_url,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+        )
+        end_time = time.perf_counter()
+        total_execution_time = round((end_time - start_time) / 60)
+        total_bids = bid_counts["total_bid"]
+        total_new_bid = bid_counts["total_new_bid"]
+        total_new_bid_file = bid_counts["total_new_bid_file"]
+        print(f"Total bids: {total_bids}")
+        print(f"Total new bids: {total_new_bid}")
+        print(f"Total new bid files: {total_new_bid_file}")
+        print(f"Process took around {total_execution_time}")
+
+        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+
+        session, _ = create_database_session(database_url=smi_record_url)
+        insert_into_record_db(
+            session = session,
+            ecgain=ecgains,
+            module_name=module_name.split(".")[0],
+            total_bid= total_bids,
+            total_new_bid=total_new_bid,
+            total_new_bid_files=total_new_bid_file,
+            timeelapsed=total_execution_time
+        )
+
+        update_value(
+                    db_url=smi_record_url, 
+                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
+                    "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
+                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                    )
+        delete_files_in_directory(download_path)
+    
+        print("Scraping Successful")
