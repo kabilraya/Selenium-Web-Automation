@@ -101,6 +101,7 @@ with SB (
     undetectable= True,
     xvfb=False,
     guest_mode=False,
+    chromium_arg="--disable-popup-blocking",
     disable_features = "ChromePDFViewer",
     external_pdf = True,
     locale = "en",
@@ -196,13 +197,13 @@ with SB (
                 print("Hash Duplication found for notice PDF")
             else:
                 save_nodes_as_pdf(
-                                                         
+
                             xpath=info_table,
                             tree=tree,
                             output_path=notice_path,                               
                             base_url="https://www.pcbfl.gov/",
                 )
-    
+
                 if os.path.exists(notice_path):
                     mb_size = os.path.getsize(notice_path) / (1024 * 1024)
                     new_file_index = len(bid_details[node_idx]["files_info"]) + 1
