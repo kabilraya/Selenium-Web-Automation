@@ -162,7 +162,7 @@ with SB (
        
         file_links = node.xpath("./td[1]/a[@href]")
         directed_link = file_links[0].get("href","").strip()
-        directed_link = urljoin("https://www.cumberlandcountyme.gov/",directed_link)
+        directed_link = urljoin("https://www.scottsbluff.org/",directed_link)
         if not is_downloadable_file(directed_link):
             print("It directs to another page... Redirecting")
             sb.uc_open(directed_link)
@@ -189,7 +189,7 @@ with SB (
         for file_idx, file_link in enumerate(file_links, start = 1):
             file_url = file_link.get("href","").strip()
             
-            file_url = urljoin("https://www.cumberlandcountyme.gov/",file_url)
+            file_url = urljoin("https://www.scottsbluff.org/",file_url)
             file_url = quote(file_url,safe="/:?&=#%")
             
             download_name = file_url.split("/")[-1]

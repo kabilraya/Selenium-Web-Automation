@@ -1,6 +1,6 @@
 import re
 
-PREFIXES = r"(?:BID|RFP|RFQ|RFQual\w*|RFI|RFB|ITB|IFB|IFQ|ITQ|SOLICITATION|PROPOSAL|QUOTE|FP|DPW|SI-CUCF|PON|Bid|RFQu|(?-i:OF))"
+PREFIXES = r"(?:BID|RFP|RFQ|RFQual\w*|RFI|RFB|RFA|ITB|IFB|IFQ|ITQ|SOLICITATION|PROPOSAL|QUOTE|FP|DPW|SI-CUCF|PON|Bid|RFQu|(?-i:OF))"
 LABEL = rf"(?:{PREFIXES}\b\s*(?:NO\.?|NUMBER|#)?\s*[:#\-]?\s*)?"
 
 # A segment must contain a digit, OR be 1-4 letters followed by a segment with a digit (e.g. "BT" in 20-BT-026)
