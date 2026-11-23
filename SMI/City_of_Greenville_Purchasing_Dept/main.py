@@ -56,6 +56,7 @@ with SB (
     xvfb=False,
     guest_mode=False,
     disable_features = "ChromePDFViewer",
+    chromium_arg="--disable-popup-blocking",
     external_pdf = True,
     locale = "en",
 ) as sb:
@@ -154,7 +155,7 @@ with SB (
                                   file_index=new_file_index,
                                   file_hash=file_hash)
             bid_details[node_idx]["files_info"].update(file)
-        close_button_xpath = "//button[@aria-label='Close this Dialog']"
+        close_button_xpath = "//a[contains(normalize-space(),'Collapse')]"
         sb.hover_and_click(hover_selector=close_button_xpath,click_selector=close_button_xpath)
         sb.sleep(5)
 

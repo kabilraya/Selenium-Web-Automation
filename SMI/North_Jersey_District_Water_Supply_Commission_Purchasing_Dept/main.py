@@ -22,7 +22,7 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+from kabil_utils.extract_bid_number import extract_bid_no
 #make all the path 
 start_time = time.perf_counter()
 
@@ -55,6 +55,7 @@ with SB (
     xvfb=False,
     guest_mode=False,
     disable_features = "ChromePDFViewer",
+    chromium_arg="--disable-popup-blocking",
     external_pdf = True,
     locale = "en",
 ) as sb:
@@ -70,7 +71,12 @@ with SB (
 
     
     project_nodes = tree.xpath("//table/tbody/tr[.//a]")
-
+    request_of_proposals = f"//ul[@class='menu']//a[normalize-space()='Request for Proposals']"
+    sb.hover_and_click(hover_selector = request_of_proposals, click_selector = request_of_proposals)
+    sb.sleep(5)
+    tree = html.fromstring(sb.get_page_source())
+    sb.sleep(2)
+    project_nodes.extend(tree.xpath("//table/tbody/tr[.//a]"))
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -79,7 +85,7 @@ with SB (
     "download_path" : download_path,
     "server_path" : server_path
     }
-
+    print(len(project_nodes))
     for node_idx, node in enumerate(project_nodes,start=1):
         
         bid_due_date = node.xpath("./td[4]")[0].text_content().strip()
@@ -97,9 +103,11 @@ with SB (
 
         if date_obj and date_obj <= datetime.today().date():
             continue
-        bid_title = node.xpath("./td[2]")[0].text_content().strip()
-        match = re.search(r'Contract\s*#\s*\d{4}', bid_title)
-        bid_no = match.group(0)
+        bid_title = " ".join(node.xpath("./td[2]")[0].itertext())
+        bid_title = re.sub(r"\s+", " ", bid_title).strip()
+
+        
+        bid_no = extract_bid_no(bid_title)
         
         print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nBid Due Date: {formatted_date}")
     
