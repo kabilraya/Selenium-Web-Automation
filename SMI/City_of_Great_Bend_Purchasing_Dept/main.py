@@ -23,6 +23,54 @@ from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
 
 #make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
 start_time = time.perf_counter()
 
 script_path = os.path.abspath(__file__)
@@ -55,6 +103,7 @@ with SB (
     guest_mode=False,
     disable_features = "ChromePDFViewer",
     external_pdf = True,
+    chromium_arg="--disable-popup-blocking",
     locale = "en",
 ) as sb:
     sb.uc_open_with_reconnect(main_url, reconnect_time=6)
@@ -79,7 +128,9 @@ with SB (
     }
     print(len(project_nodes))
     for node_idx, node in enumerate(project_nodes,start=1):
-
+        status = node.xpath(".//span[contains(@class,'bid-status')]")[0].text_content().strip()
+        if status.lower() == 'closed':
+            continue
         bid_title = node.xpath("./h3")[0].text_content().strip()
         bid_no = bid_title[:25]
         bid_due_date = node.xpath("./div[contains(normalize-space(),'End date')]/p[2]/span/text()[normalize-space()]")[0].strip()
@@ -124,38 +175,41 @@ with SB (
 
         updated_source = sb.get_page_source()
         detail_tree = html.fromstring(updated_source)
-        is_duplicate_hash = False
-        try:
-            session, _ = create_database_session(database_url=smi_data_url)
-            is_duplicate_hash = check_for_duplicate_hash(session=session, hash=notice_hash)
-            session.close()
-        except Exception as e:
-            print(f"Session creation failed {e}")
-        if is_duplicate_hash:
-            print("Hash Duplication found for notice PDF")
-        else:
-            save_nodes_as_pdf(
-            detail_tree,                              
-            "//div[@id='bidDetails']/div[contains(@class,'offcanvas-body')]",
-            notice_path,                               
-            base_url="https://www.greatbendks.gov/",
-            exclude_xpaths=[".//p[contains(@class,'mb-2')]"],
-            )
-
-            if os.path.exists(notice_path):
-                mb_size = os.path.getsize(notice_path) / (1024 * 1024)
-                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                bid_details[node_idx]["files_info"][new_file_index] = {
-                    "file_name": notice_filename,
-                    "sanitized_file_name": notice_filename,
-                    "file_url": notice_filename,
-                    "file_size": f"{mb_size:.4f} MB",
-                    "md5_hash": notice_hash,
-                    "iconverted": 0
-                }
+        file_links = detail_tree.xpath("//div[@id='bidDetails']/div[contains(@class,'offcanvas-body')]//a[not(contains(@class,'btn'))]")
+        print(len(file_links))
+        if not file_links:
+            continue
+        
+        for file_idx, file_link in enumerate(file_links, start = 1):
+            file_url = file_link.get("href","").strip()
+            file_url = urljoin("https://www.greatbendks.gov/",file_url)
             
-            else:
-                print("Notice PDF was not created — no tables matched, skipping dictionary update")
+            # if not is_downloadable_file(file_url):
+            #     print("Not a downloadable link so skipping it")
+            #     continue
+            download_name = file_url.split("/")[-1]
+            print(download_name)
+            file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+            # create a session of database to check for duplication of hash and kill the session immediately
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                session.close()
+                if is_duplicate_hash:
+                    print("Hash Duplication found")
+                    continue
+            except Exception as e:
+                print(f"Session creation failed {e}")
+                continue
+            new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+            
+            file = download_files(sb = sb,
+                                  file_url=file_url,
+                                  script_directory=script_directory,
+                                  download_path=download_path,
+                                  file_index=new_file_index,
+                                  file_hash=file_hash)
+            bid_details[node_idx]["files_info"].update(file)
         close_button = "//div[@id='bidDetails']//div[contains(@class,'offcanvas-header')]//button[contains(@class,'btn-close') or @aria-label='Close']"
         sb.wait_for_element_visible(close_button, timeout=10)
         sb.sleep(0.5)  

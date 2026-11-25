@@ -17,14 +17,63 @@ from functions import download_files, regex_date_filter
 from urllib.parse import urljoin,urlsplit
 from datetime import datetime
 from model.smi_model import SMI
-from kabil_utils.extract_and_insertion import extract_from_json_and_insert
+
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
 from kabil_utils.vpn_disconnet import disconnect_vpn
-from kabil_utils.vpn_required_db_insertion import extract_from_json_and_add_to_db
+from kabil_utils.extract_and_insertion import extract_from_json_and_insert
+from kabil_utils.extract_bid_number import extract_bid_no
 import re
 #make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
 start_time = time.perf_counter()
 
 script_path = os.path.abspath(__file__)
@@ -46,14 +95,7 @@ env_path = os.path.join(script_directory,".env")
 ] = get_env(env_path)
 
 download_path=os.path.join(script_directory, "download")
-PREFIX_MAP = {
-    "INVITATION FOR BIDS": "IFB",
-    "REQUEST FOR PROPOSAL": "RFP",
-    "REQUEST FOR PROPOSALS": "RFP",
-    "REQUEST FOR QUESTIONS": "RFQ",
-    "REQUEST FOR QUOTES": "RFQ",
-    "REQUEST FOR QUOTATIONS": "RFQ",
-}
+
 with SB (
     uc = True,
     test = True,
@@ -64,12 +106,13 @@ with SB (
     guest_mode=False,
     disable_features = "ChromePDFViewer",
     external_pdf = True,
+    chromium_arg= "--disable-popup-blocking",
     locale = "en",
 ) as sb:
     sb.uc_open_with_reconnect(main_url, reconnect_time=6)
 
     sb.uc_gui_click_captcha()
-    sb.sleep(3)
+    sb.sleep(10)
     sb.switch_to_default_content()
     bid_details = {
             "ecgains": ecgains,
@@ -84,34 +127,17 @@ with SB (
         page_source = sb.get_page_source()
         time.sleep(3)
         tree = html.fromstring(page_source)
-        project_nodes = tree.xpath("//table[@class='e-table']//tr[@role='row']")
+        project_nodes = tree.xpath("//table[contains(@id,'content_table')]/tbody/tr")
 
         #Creating a top level directory which consists the top level infomation common for all the bids in one websites
         
         print(len(project_nodes))
         for node_idx, node in enumerate(project_nodes,start=1):
            
-            solicitation_name = node.xpath("./td[3]")[0].text_content().strip()
+            bid_title = node.xpath("./td[2]")[0].text_content().strip()
             
-            bid_pattern = re.compile(
-            r'^((?:[A-Z]{2,}\.?\s+)*[A-Z]{2,}\s*#?\s*\d+(?:-\d+)?)\s*-?\s*(.+)$'
-                )
-            solicitation_name = " ".join(solicitation_name.split())  # normalize whitespace
-            match = bid_pattern.match(solicitation_name)
-        
-            if match:
-                bid_no, _ = match.groups()  
-                bid_no = bid_no.strip()
-
-                for full_form, abbr in PREFIX_MAP.items():
-                    if bid_no.upper().startswith(full_form):
-                        bid_no = bid_no.replace(full_form, abbr, 1)
-                        break
-                bid_title = solicitation_name
-            else:    
-                bid_title = solicitation_name.strip()
-                bid_no = bid_title[:25]
-            bid_due_date = node.xpath("./td[8]")[0].text_content().strip()
+            bid_no = extract_bid_no(bid_title)
+            bid_due_date = node.xpath("./td[7]")[0].text_content().strip()
                 
 
             formatted_date = regex_date_filter(bid_due_date)
@@ -133,58 +159,61 @@ with SB (
 
             print(formatted_date)
             print(f"{bid_title} {bid_no}")
-            directed_links = node.xpath(".//a")
-            if not directed_links:
-                continue
+            directed_link = f"//table[contains(@id,'content_table')]/tbody/tr[contains(normalize-space(),'{bid_title}')]/td[1]//button"
+            sb.hover_and_click(hover_selector=directed_link, click_selector = directed_link)
             
-            # If any one link is found we make a dictionary         
-            main_window = sb.driver.current_window_handle
-            for _,directed_link in enumerate(directed_links):
-                directed_url = directed_link.get("href","").strip()
-                directed_url = urljoin("https://contracts.rockvillemd.gov/",directed_url)
-                sb.execute_script("window.open(arguments[0],'_blank');",directed_url)
-                sb.sleep(5)
-                sb.switch_to_window(sb.driver.window_handles[-1])
-                
-                sb.uc_gui_click_captcha()
-                sb.sleep(3)
-                sb.switch_to_default_content()
-                sb.sleep(3)
-                sb.hover_and_click(click_selector="//ul[@class='rtsUL']//li[2]", hover_selector="//ul[@class='rtsUL']//li[2]")
-                sb.sleep(15)
-                page_source = sb.get_page_source()
-                sb.sleep(3)
-                tree = html.fromstring(page_source)
-                file_links = tree.xpath("//a[contains(@class,'linkButton')][contains(@title,'download the file')]")
-                print(len(file_links))
-                sb.driver.close()
-                sb.switch_to_window(main_window)
-                if not file_links:
+             
+            
+            sb.sleep(15)
+            files_button = f"//div[contains(normalize-space(),'Files & Attachments') and @role='tab']"
+            sb.hover_and_click(hover_selector = files_button, click_selector=files_button)
+            sb.sleep(5)
+            page_source = sb.get_page_source()
+            sb.sleep(3)
+            tree = html.fromstring(page_source)
+            file_links = tree.xpath("//table[contains(@id,'content_table')]/tbody/tr//a")
+            print(len(file_links))
+            
+            if not file_links:
+                continue
+            bid_details[node_idx] = {
+                    "bid_no": bid_no,
+                    "bid_title": bid_title,          
+                    "bid_due_date": formatted_date,        
+                    "agency_name": module_name,
+                    "files_info": {}
+                }
+            for file_idx, file in enumerate(file_links, start = 1):
+                file_url = file.get("href","").strip()
+                download_name = file_url.split("/")[-1]
+                print(download_name)
+                file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
+                try:
+                    session, _ = create_database_session(database_url=smi_data_url)
+                    is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                    session.close()
+                    if is_duplicate_hash:
+                        print("Hash Duplication found")
+                        continue
+                except Exception as e:
+                    print(f"Session creation failed {e}")
                     continue
-                bid_details[node_idx] = {
-                        "bid_no": bid_no,
-                        "bid_title": bid_title,          
-                        "bid_due_date": formatted_date,        
-                        "agency_name": module_name,
-                        "files_info": {}
-                    }
-                for file_idx, file in enumerate(file_links, start = 1):
-                    file_url = file.get("href","").strip()
-                    download_name = file_url.split("/")[-1]
-                    print(download_name)
-                    file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
-                    # create a session of database to check for duplication of hash and kill the session immediately
-
-
-                    new_file_index = len(bid_details[node_idx]["files_info"]) + 1
-                    file_url = urljoin("https://www.prcity.com/",file_url)
-                    file = download_files(sb = sb,
-                                          file_url=file_url,
-                                          script_directory=script_directory,
-                                          download_path=download_path,
-                                          file_index=new_file_index,
-                                          file_hash=file_hash)
-                    bid_details[node_idx]["files_info"].update(file)
+                # create a session of database to check for duplication of hash and kill the session immediately
+                new_file_index = len(bid_details[node_idx]["files_info"]) + 1
+                file_url = urljoin(main_url,file_url)
+                file = download_files(sb = sb,
+                                      file_url=file_url,
+                                      script_directory=script_directory,
+                                      download_path=download_path,
+                                      file_index=new_file_index,
+                                      file_hash=file_hash)
+                bid_details[node_idx]["files_info"].update(file)
+            sb.hover_and_click(hover_selector = "//a[contains(@href,'solicitationsearch')]", click_selector="//a[contains(@href,'solicitationsearch')]")
+            sb.sleep(5)
+            #Go the page in which we were as clicking back always goes to the first page
+            current_page_button = f"//a[contains(@class,'e-link') and normalize-space()='{current_page}']"
+            sb.hover_and_click(hover_selector=current_page_button,click_selector=current_page_button)
+            sb.sleep(5)
         disabled_next_btn = "//div[@class='e-pagercontainer']/div[contains(@class,'e-nextpagedisabled')]"
         if sb.is_element_visible(disabled_next_btn):
             print("Reached last page.")
@@ -212,10 +241,9 @@ with SB (
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
-        disconnect_vpn()
-        time.sleep(6)
+        
 
-        bid_counts = extract_from_json_and_add_to_db(
+        bid_counts = extract_from_json_and_insert(
             json_path=json_path,
             db_url=smi_data_url,
             region_name=region_name,
