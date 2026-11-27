@@ -10,7 +10,107 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from kabil_utils.file_splitter import split_pdf
 from kabil_utils.iconverter import get_iconverted_value
+import re
+from lxml import etree
+from markdownify import markdownify as md
 from urllib.parse import urljoin
+import markdown as md_lib
+from weasyprint import HTML, CSS
+
+def strip_empty_elements(node):
+    """Remove elements that contain no visible text/content, working bottom-up
+    so a parent that becomes empty after its empty children are removed
+    also gets removed."""
+    EMPTY_CANDIDATE_TAGS = {"p", "ol", "ul", "div", "span"}
+
+    for child in list(node):
+        strip_empty_elements(child)
+
+    if node.tag in EMPTY_CANDIDATE_TAGS:
+        has_text = (node.text and node.text.strip()) or any(
+            (child.tail and child.tail.strip()) for child in node
+        )
+        has_meaningful_children = len(node) > 0 
+        if not has_text and not has_meaningful_children:
+            parent = node.getparent()
+            if parent is not None:
+                if node.tail and node.tail.strip():
+                    prev = node.getprevious()
+                    if prev is not None:
+                        prev.tail = (prev.tail or "") + node.tail
+                    else:
+                        parent.text = (parent.text or "") + node.tail
+                parent.remove(node)
+
+
+def remove_excluded_elements(node, exclude_xpaths):
+    """Remove elements matching any of the given XPath expressions
+    (relative to `node`) before converting to Markdown."""
+    if not exclude_xpaths:
+        return
+    for xpath in exclude_xpaths:
+        for match in node.xpath(xpath):
+            parent = match.getparent()
+            if parent is not None:
+                parent.remove(match)
+
+
+def node_to_markdown(node, base_url: str = "", exclude_xpaths=None) -> str:
+    for a in node.xpath(".//a[@href]"):
+        href = a.get("href", "").strip()
+        if href and base_url:
+            a.set("href", urljoin(base_url, href))\
+
+    for img in node.xpath(".//img[@src]"):
+        src = img.get("src", "").strip()
+        if src and base_url:
+            img.set("src", urljoin(base_url, src))
+        
+        if not img.get("alt"):
+            img.set("alt", "image")
+
+    remove_excluded_elements(node, exclude_xpaths)
+    strip_empty_elements(node)
+
+    inner_html = etree.tostring(node, encoding="unicode", method="html")
+    text = md(inner_html, heading_style="ATX", bullets="-", strip=["script", "style"])
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+def save_nodes_as_pdf(tree, xpath: str, output_path: str, base_url: str = "", exclude_xpaths=None) -> None:
+    nodes = tree.xpath(xpath)
+    if not nodes:
+        print("No nodes found — nothing to save")
+        return
+
+    md_chunks = []
+    for idx, node in enumerate(nodes):
+        md_chunks.append(node_to_markdown(node, base_url=base_url, exclude_xpaths=exclude_xpaths))
+        if idx < len(nodes) - 1:
+            md_chunks.append("\n\n---\n\n")   
+
+    full_markdown = "\n\n".join(md_chunks)
+
+    
+    with open(output_path.replace(".pdf", ".md"), "w", encoding="utf-8") as f:
+        f.write(full_markdown)
+
+    html_body = md_lib.markdown(full_markdown, extensions=["extra", "sane_lists"])
+
+    css = CSS(string="""
+    @page { size: letter; margin: 40px; }
+    body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; line-height: 1.4; }
+    hr { border: none; border-top: 1px solid #999; margin: 12px 0; }
+    p { margin: 0 0 10px 0; }
+    ol, ul { margin: 4px 0 10px 1.2em; padding: 0; }
+    a { color: blue; text-decoration: underline; }
+    p:empty, ol:empty, ul:empty, div:empty { margin: 0; padding: 0; display: none; }
+""")
+
+    HTML(string=f"<html><body>{html_body}</body></html>").write_pdf(
+        output_path, stylesheets=[css]
+    )
 
 def regex_date_filter(raw_due_date: str) -> str | None:
     """

@@ -13,17 +13,64 @@ from kabil_utils.get_env import get_env
 from kabil_utils.md5_generator import generate_md5_hash
 from kabil_utils.session_creator import create_database_session
 from kabil_utils.db_duplicate_hash_checker import check_for_duplicate_hash
-from functions import download_files, regex_date_filter
-from urllib.parse import urljoin,quote
+from functions import download_files, regex_date_filter, save_nodes_as_pdf,santitize_file_name
+from urllib.parse import urljoin,urlsplit
 from datetime import datetime
 from model.smi_model import SMI
-from kabil_utils.vpn_required_db_insertion import extract_from_json_and_add_to_db
+from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-from kabil_utils.vpn_disconnet import disconnect_vpn
-import re
+
 #make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
 start_time = time.perf_counter()
 
 script_path = os.path.abspath(__file__)
@@ -45,7 +92,60 @@ env_path = os.path.join(script_directory,".env")
 ] = get_env(env_path)
 
 download_path=os.path.join(script_directory, "download")
+def close_initial_overlay(sb, wait=8):
+    # Radzen dialogs, Bootstrap modals/offcanvas, and generic close buttons
+    close_selectors = [
+        ".rz-dialog-titlebar-close",
+        ".rz-dialog-close",
+        ".rz-dialog .rz-dialog-titlebar a",
+        ".modal.show .btn-close",
+        ".offcanvas.show .btn-close",
+        "#bidDetails.show .btn-close",
+        "button[aria-label='Close']",
+        "[aria-label='Close']",
+    ]
+    overlay_selectors = (
+        ".rz-dialog-wrapper, .rz-dialog-mask, .modal.show, .modal-backdrop, "
+        ".offcanvas.show, .offcanvas-backdrop, [role='dialog']"
+    )
 
+    # 1. wait for the overlay to exist at all
+    try:
+        sb.wait_for_element_present(overlay_selectors, timeout=wait)
+    except Exception:
+        print("No overlay appeared")
+        return
+
+    # 2. try clicking a real close button
+    for sel in close_selectors:
+        try:
+            if sb.is_element_present(sel):
+                sb.js_click(sel)
+                sb.sleep(1)
+                if not sb.is_element_present(overlay_selectors):
+                    print(f"Closed overlay with {sel}")
+                    return
+        except Exception:
+            pass
+
+    # 3. try Escape
+    try:
+        sb.send_keys("body", "\ue00c")  # Keys.ESCAPE
+        sb.sleep(1)
+        if not sb.is_element_present(overlay_selectors):
+            print("Closed overlay with ESC")
+            return
+    except Exception:
+        pass
+
+    # 4. last resort: remove it from the DOM and unlock page scrolling
+    sb.execute_script("""
+        document.querySelectorAll(arguments[0]).forEach(e => e.remove());
+        document.body.classList.remove('modal-open');
+        document.body.style.overflow = 'auto';
+        document.body.style.paddingRight = '0';
+    """, overlay_selectors)
+    print("Removed overlay via JS")
 with SB (
     uc = True,
     test = True,
@@ -56,6 +156,7 @@ with SB (
     guest_mode=False,
     disable_features = "ChromePDFViewer",
     external_pdf = True,
+    chromium_arg="--disable-popup-blocking",
     locale = "en",
 ) as sb:
     sb.uc_open_with_reconnect(main_url, reconnect_time=6)
@@ -63,13 +164,14 @@ with SB (
     sb.uc_gui_click_captcha()
     sb.sleep(3)
     sb.switch_to_default_content()
-
-
+    
+    sb.sleep(3)
+    close_initial_overlay(sb)
     page_source = sb.get_page_source()
     time.sleep(3)
     tree = html.fromstring(page_source)
-    project_nodes = tree.xpath("//table[@class='rpfbids']//table//tr[1]")
-    print(len(project_nodes))
+    project_nodes = tree.xpath("//div[contains(@class,'rz-card-body')]")
+    
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
     "ecgains": ecgains,
@@ -78,47 +180,67 @@ with SB (
     "download_path" : download_path,
     "server_path" : server_path
     }
-    seen_bid_no = set()
+    print(len(project_nodes))
     for node_idx, node in enumerate(project_nodes,start=1):
-        bid_due_date = node.xpath("./td[3]")[0].text_content().strip()
-        if bid_due_date.lower() == "open until contracted":
+        status = node.xpath(".//span[contains(@class,'bid-status')]")[0].text_content().strip()
+        if status.lower() == 'closed':
             continue
-
-        bid_no = node.xpath("./td[1]/a[@href]")[0].text_content().strip()
-        match = re.search(r'\b(RFQ|IFB|RFP|RFQS|ITB|RFB|RFI)\b\s*#?\s*([\w-]*\d[\w-]*)', bid_no)
-        if match:
-            abbrev, number = match.groups()
-            if re.search(r'\d', number):
-                bid_no =  f"{abbrev} #{number}"
-        
-        
-        bid_title = node.xpath("./td[1]/a[@href]/following-sibling::text()")[0].strip()
-        
-        
+        bid_title = node.xpath("./h3")[0].text_content().strip()
+        bid_no = bid_title[:25]
+        bid_due_date = node.xpath("./div[contains(normalize-space(),'End date')]/p[2]/span/text()[normalize-space()]")
+        if not bid_due_date:
+            continue
+        bid_due_date = bid_due_date[0].strip()
         formatted_date = regex_date_filter(bid_due_date)
+
         date_obj = None
         if formatted_date:
             try:
-                date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
+                date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
             except ValueError as e:
                 try:
-                    date_obj = datetime.strptime(formatted_date,"%m/%d/%Y").date()
+                    date_obj = datetime.strptime(formatted_date,"%m/%d/%y").date()
                 except ValueError as e:
-                    print(f"Date cannot be parsed with error {e}")
+                    print(f"Cannot Parse the date.. Failed due to: {e}")
                     continue
-        if date_obj and date_obj <= datetime.today().date():
+
+        if date_obj and date_obj < datetime.today().date():
+            
             continue
-        print(f"Bid Title: {bid_title}\nBid Number: {bid_no}\nDue Date: {formatted_date}")
+
+        print(formatted_date)
+        print(f"{bid_title} {bid_no}")
         
         bid_details[node_idx] = {
-            "bid_no": bid_no,
-            "bid_title": bid_title,          
-            "bid_due_date": formatted_date,        
-            "agency_name": module_name,
-            "files_info": {}
+                            "bid_no": bid_no,
+                            "bid_title": bid_title,          
+                            "bid_due_date": formatted_date,        
+                            "agency_name": module_name,
+                            "files_info": {}
         }
-        file_links = node.xpath("./td[1]/a[@href]")
+        # If any one link is found we make a dictionary         
+    
 
+        notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
+        notice_path = os.path.join(download_path, notice_filename)
+        os.makedirs(download_path, exist_ok=True)
+        notice_hash = generate_md5_hash(ecgain=ecgains, bidno=bid_no, filename=notice_filename)
+        button_xpath = (
+    f"(//div[contains(@class,'rz-card-body')])[{node_idx}]"
+    f"//span[@data-text='Expand Details']"
+    )
+        sb.wait_for_element_present(button_xpath, timeout=15)
+        sb.scroll_to(button_xpath)   # may fail if hidden, wrap in try/except
+        sb.js_click(button_xpath)
+        sb.sleep(3)
+        
+        
+        
+        
+
+        updated_source = sb.get_page_source()
+        detail_tree = html.fromstring(updated_source)
+        file_links = detail_tree.xpath("//div[@id='bidDetails']/div[contains(@class,'offcanvas-body')]//a[not(contains(@class,'btn'))]")
         print(len(file_links))
         if not file_links:
             continue
@@ -126,14 +248,24 @@ with SB (
         for file_idx, file_link in enumerate(file_links, start = 1):
             file_url = file_link.get("href","").strip()
             file_url = urljoin("https://www.somertonaz.gov/",file_url)
-            file_url = quote(file_url,safe="/:?&=#%")
             
+            # if not is_downloadable_file(file_url):
+            #     print("Not a downloadable link so skipping it")
+            #     continue
             download_name = file_url.split("/")[-1]
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
             # create a session of database to check for duplication of hash and kill the session immediately
-            
-            
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                session.close()
+                if is_duplicate_hash:
+                    print("Hash Duplication found")
+                    continue
+            except Exception as e:
+                print(f"Session creation failed {e}")
+                continue
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
             
             file = download_files(sb = sb,
@@ -143,6 +275,12 @@ with SB (
                                   file_index=new_file_index,
                                   file_hash=file_hash)
             bid_details[node_idx]["files_info"].update(file)
+        close_button = "//div[@id='bidDetails']//div[contains(@class,'offcanvas-header')]//button[contains(@class,'btn-close') or @aria-label='Close']"
+        sb.wait_for_element_visible(close_button, timeout=10)
+        sb.sleep(0.5)  
+        sb.hover_and_click(click_selector=close_button, hover_selector=close_button)
+
+        
 
     has_downloads = any(
         bid["files_info"]
@@ -160,49 +298,47 @@ with SB (
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
-        disconnect_vpn()
-        time.sleep(5)
-        bid_counts = extract_from_json_and_add_to_db(
-            json_path=json_path,
-            db_url=smi_data_url,
-            region_name=region_name,
-            endpoint_url=endpoint_url,
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key,
-        )
-        end_time = time.perf_counter()
-        total_execution_time = round((end_time - start_time) / 60)
-        total_bids = bid_counts["total_bid"]
-        total_new_bid = bid_counts["total_new_bid"]
-        total_new_bid_file = bid_counts["total_new_bid_file"]
-        print(f"Total bids: {total_bids}")
-        print(f"Total new bids: {total_new_bid}")
-        print(f"Total new bid files: {total_new_bid_file}")
-        print(f"Process took around {total_execution_time}")
 
-        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+        # bid_counts = extract_from_json_and_insert(
+        #     json_path=json_path,
+        #     db_url=smi_data_url,
+        #     region_name=region_name,
+        #     endpoint_url=endpoint_url,
+        #     aws_access_key_id=aws_access_key_id,
+        #     aws_secret_access_key=aws_secret_access_key,
+        # )
+        # end_time = time.perf_counter()
+        # total_execution_time = round((end_time - start_time) / 60)
+        # total_bids = bid_counts["total_bid"]
+        # total_new_bid = bid_counts["total_new_bid"]
+        # total_new_bid_file = bid_counts["total_new_bid_file"]
+        # print(f"Total bids: {total_bids}")
+        # print(f"Total new bids: {total_new_bid}")
+        # print(f"Total new bid files: {total_new_bid_file}")
+        # print(f"Process took around {total_execution_time}")
 
-        session, _ = create_database_session(database_url=smi_record_url)
-        insert_into_record_db(
-            session = session,
-            ecgain=ecgains,
-            module_name=module_name.split(".")[0],
-            total_bid= total_bids,
-            total_new_bid=total_new_bid,
-            total_new_bid_files=total_new_bid_file,
-            timeelapsed=total_execution_time
-        )
+        # #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
 
-        update_value(
-                    db_url=smi_record_url, 
-                    query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value, " \
-                    "baseURL = :baseURL_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value", 
-                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value": main_url}, 
-                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-                    )
-        delete_files_in_directory(download_path)
+        # session, _ = create_database_session(database_url=smi_record_url)
+        # insert_into_record_db(
+        #     session = session,
+        #     ecgain=ecgains,
+        #     module_name=module_name.split(".")[0],
+        #     total_bid= total_bids,
+        #     total_new_bid=total_new_bid,
+        #     total_new_bid_files=total_new_bid_file,
+        #     timeelapsed=total_execution_time
+        # )
+
+        # update_value(
+        #             db_url=smi_record_url,
+        #             query="UPDATE tbl_smirecord SET brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+        #             new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1"},
+        #             condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+        #             )
+        # delete_files_in_directory(download_path)
     
-        print("Scraping Successful")
+        # print("Scraping Successful")
 
     
 

@@ -23,6 +23,54 @@ from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
 import re
 #make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
 start_time = time.perf_counter()
 
 script_path = os.path.abspath(__file__)
@@ -44,7 +92,24 @@ env_path = os.path.join(script_directory,".env")
 ] = get_env(env_path)
 
 download_path=os.path.join(script_directory, "download")
-
+def close_overlays(sb):
+    selectors = [
+        'button[aria-label="Close"]',
+        'button.close',
+        '.modal .close',
+        '.popup-close',
+        '#onetrust-accept-btn-handler',   # cookie banners
+        'button:contains("Accept")',
+        'button:contains("No thanks")',
+        'button:contains("Dismiss")',
+    ]
+    for sel in selectors:
+        try:
+            if sb.is_element_visible(sel):
+                sb.click(sel, timeout=1)
+                sb.sleep(0.3)
+        except Exception:
+            pass
 with SB (
     uc = True,
     test = True,
@@ -54,6 +119,7 @@ with SB (
     xvfb=False,
     guest_mode=False,
     disable_features = "ChromePDFViewer",
+    chromium_arg="--disable-popup-blocking",
     external_pdf = True,
     locale = "en",
 ) as sb:
@@ -62,6 +128,8 @@ with SB (
     sb.uc_gui_click_captcha()
     sb.sleep(5)
     sb.switch_to_default_content()
+    sb.sleep(3)
+    close_overlays(sb)
     sb.sleep(3)
     page_source = sb.get_page_source()
     
@@ -113,7 +181,7 @@ with SB (
             "files_info": {}
         }
         for file_idx, file_link in enumerate(file_links,start = 1):
-            button_xpath_string = f"(//div[@class='bid-content'])[{node_idx}]//button[contains(@class,'doc-summary-btn')][{file_idx}]"
+            button_xpath_string = f"//div[@class='bid-content' and contains(normalize-space(),'{bid_title}')]//button[contains(@class,'doc-summary-btn')][{file_idx}]"
             sb.hover_and_click(hover_selector = button_xpath_string, click_selector = button_xpath_string)
             sb.sleep(5)
             
@@ -123,7 +191,16 @@ with SB (
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
             # create a session of database to check for duplication of hash and kill the session immediately
-            
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                session.close()
+                if is_duplicate_hash:
+                    print("Hash Duplication found")
+                    continue
+            except Exception as e:
+                print(f"Session creation failed {e}")
+                continue
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
             file_link = urljoin("https://www.kingsporttn.gov/",file_link)
             file_link = quote(file_link, safe="/?%:&")
@@ -153,46 +230,46 @@ with SB (
 
         print(f"JSON saved to: {json_path}")
 
-        # bid_counts = extract_from_json_and_insert(
-        #     json_path=json_path,
-        #     db_url=smi_data_url,
-        #     region_name=region_name,
-        #     endpoint_url=endpoint_url,
-        #     aws_access_key_id=aws_access_key_id,
-        #     aws_secret_access_key=aws_secret_access_key,
-        # )
-        # end_time = time.perf_counter()
-        # total_execution_time = round((end_time - start_time) / 60)
-        # total_bids = bid_counts["total_bid"]
-        # total_new_bid = bid_counts["total_new_bid"]
-        # total_new_bid_file = bid_counts["total_new_bid_file"]
-        # print(f"Total bids: {total_bids}")
-        # print(f"Total new bids: {total_new_bid}")
-        # print(f"Total new bid files: {total_new_bid_file}")
-        # print(f"Process took around {total_execution_time}")
+        bid_counts = extract_from_json_and_insert(
+            json_path=json_path,
+            db_url=smi_data_url,
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+        )
+        end_time = time.perf_counter()
+        total_execution_time = round((end_time - start_time) / 60)
+        total_bids = bid_counts["total_bid"]
+        total_new_bid = bid_counts["total_new_bid"]
+        total_new_bid_file = bid_counts["total_new_bid_file"]
+        print(f"Total bids: {total_bids}")
+        print(f"Total new bids: {total_new_bid}")
+        print(f"Total new bid files: {total_new_bid_file}")
+        print(f"Process took around {total_execution_time}")
 
-        # #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
+        #Inserting the records such as total_bids, total_new_bids, total_new_bid_files and execution_time into Record DB
 
-        # session, _ = create_database_session(database_url=smi_record_url)
-        # insert_into_record_db(
-        #     session = session,
-        #     ecgain=ecgains,
-        #     module_name=module_name.split(".")[0],
-        #     total_bid= total_bids,
-        #     total_new_bid=total_new_bid,
-        #     total_new_bid_files=total_new_bid_file,
-        #     timeelapsed=total_execution_time
-        # )
+        session, _ = create_database_session(database_url=smi_record_url)
+        insert_into_record_db(
+            session = session,
+            ecgain=ecgains,
+            module_name=module_name.split(".")[0],
+            total_bid= total_bids,
+            total_new_bid=total_new_bid,
+            total_new_bid_files=total_new_bid_file,
+            timeelapsed=total_execution_time
+        )
 
-        # update_value(
-        #             db_url=smi_record_url,
-        #             query="UPDATE tbl_smirecord SET baseURL = :baseURL_value, brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
-        #             new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value" : main_url},
-        #             condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
-        #             )
-        # delete_files_in_directory(download_path)
+        update_value(
+                    db_url=smi_record_url,
+                    query="UPDATE tbl_smirecord SET baseURL = :baseURL_value, brokenFlag = :broken_flag_value, server = :server_value WHERE ecgain = :ecgain_value AND moduleName = :module_name_value",
+                    new_values={"broken_flag_value": 0, "server_value": "nplproductionSelenium1", "baseURL_value" : main_url},
+                    condition_values={"ecgain_value": ecgains, "module_name_value": module_name.split(".")[0]},
+                    )
+        delete_files_in_directory(download_path)
     
-        # print("Scraping Successful")
+        print("Scraping Successful")
 
     
 

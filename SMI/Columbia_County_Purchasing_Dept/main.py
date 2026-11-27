@@ -21,8 +21,57 @@ from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
-
+import re
+from kabil_utils.extract_bid_number import extract_bid_no
 #make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
 start_time = time.perf_counter()
 
 script_path = os.path.abspath(__file__)
@@ -53,13 +102,14 @@ with SB (
     undetectable= True,
     xvfb=False,
     guest_mode=False,
+    chromium_arg="--disable-popup-blocking",
     disable_features = "ChromePDFViewer",
     external_pdf = True,
     locale = "en",
 ) as sb:
     sb.uc_open_with_reconnect(main_url, reconnect_time=6)
 
-    sb.uc_gui_click_captcha()
+    sb.uc_gui_handle_captcha()  
     sb.sleep(3)
     sb.switch_to_default_content()
 
@@ -81,11 +131,11 @@ with SB (
     for node_idx, node in enumerate(project_nodes,start=1):
         bid_due_date = node.xpath("./div[2]/div[2]/span[2]")[0].text_content().strip()
         if bid_due_date.lower() == "upon contract":
-            print(f"{bid_title} is Upon Contract so skipping")
+            print("Skipping Upon Contract")
             continue
 
         bid_title = node.xpath("./div[1]/span[1]")[0].text_content().strip()
-        bid_no = node.xpath("./div[1]/span[2]/text()")[0].strip()
+        bid_no = bid_title[:25].strip()
 
         if bid_no in seen_bid_no:
             print(f"\n\n{bid_no} is repeated so skipping this\n\n")
@@ -119,7 +169,7 @@ with SB (
         for directed_link in directed_links:
             directed_url = directed_link.get("href","").strip()
             directed_url = urljoin("https://ny-columbiacounty.civicplus.com/",directed_url)
-            sb.uc_open_with_reconnect(directed_url)
+            sb.uc_open(directed_url)
             sb.sleep(3)
             sb.uc_gui_click_captcha()
             sb.sleep(3)
@@ -128,7 +178,7 @@ with SB (
             page_source = sb.get_page_source()
             sb.sleep(2)
             tree = html.fromstring(page_source)
-            notice_filename = f"{bid_title.replace(' ','_').replace('#','')}_bid_notice.pdf"
+            notice_filename = re.sub(r'[\\/:*?"<>|&#\s]+', "_", bid_title).strip("._") + "_bid_notice.pdf"
             notice_path = os.path.join(download_path, notice_filename)
             os.makedirs(download_path, exist_ok=True)
 
@@ -148,13 +198,13 @@ with SB (
                 print("Hash Duplication found for notice PDF")
             else:
                 save_nodes_as_pdf(
-                                                         
+
                             xpath=info_table,
                             tree=tree,
                             output_path=notice_path,                               
                             base_url="https://ny-columbiacounty.civicplus.com/",
                 )
-    
+
                 if os.path.exists(notice_path):
                     mb_size = os.path.getsize(notice_path) / (1024 * 1024)
                     new_file_index = len(bid_details[node_idx]["files_info"]) + 1
@@ -178,9 +228,9 @@ with SB (
                 file_url = file_link.get("href","").strip()
                 file_url = urljoin("https://ny-columbiacounty.civicplus.com/",file_url)
                 file_url = quote(file_url,safe="/:?&=#%")
-                if not is_downloadable_file(file_url):
-                    print("Not a downloadable link so skipping it")
-                    continue
+                # if not is_downloadable_file(file_url):
+                #     print("Not a downloadable link so skipping it")
+                #     continue
 
                 download_name = file_url.split("/")[-1]
                 print(download_name)

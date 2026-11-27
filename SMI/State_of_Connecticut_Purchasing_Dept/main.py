@@ -66,10 +66,16 @@ def _close_log():
 
 atexit.register(_close_log)
 
+#This is API endpoint which when hit gives the detail about one specific bid using the bid_id for that particular bid.
+# The API response has all the info of one bid including the document details as well
+SPECIFIC_BID_API = "https://webprocure.proactiscloud.com/wp-full-text-search/soldetail/{bid}?customerid=51"
 
-FILE_API_URL = "https://webprocure.proactiscloud.com/wp-full-text-search/soldetail/{bid}?customerid=51"
+# This is the URL which when opened directs the scraper to the actual particular bid page which consists of all the bid documents
+# Again uses bid_id which is not the bid number
 bid_attachment_url = "https://webprocure.proactiscloud.com/wp-web-public/en/#/bidboard/bid/{bid}?pagenumber=1&customerid=51&oid=149300&shorBy=r"
+
 MAX_AGE_DAYS = 20
+
 updateStURL2 = "https://webprocure.proactiscloud.com/wp-full-text-search/soldetail/{bid}?customerid=51"
 TABLE = "tbl_WebBid"              
 COL_ID = "webID"            
@@ -137,7 +143,7 @@ def group_by_bid_no(rows):
 def fetch_docs(bid):
     
     r = requests.get(
-        FILE_API_URL.format(bid=bid),
+        SPECIFIC_BID_API.format(bid=bid),
         headers={
             "User-Agent": "Mozilla/5.0",
             "Accept": "application/json"
@@ -182,10 +188,7 @@ def fetch_docs(bid):
 
     return docs
 
-SEARCH_API_URL = (
-    "https://webprocure.proactiscloud.com/"
-    "wp-full-text-search/search/sols"
-)
+
 SEARCH_API_URL = (
     "https://webprocure.proactiscloud.com/"
     "wp-full-text-search/search/sols"
@@ -196,7 +199,7 @@ def get_bid_id(bidno):
             SEARCH_API_URL,
             params={
                 "customerid": 51,
-                "q": bidno,
+                "q": f'"{bidno}"',
                 "from": 0,
                 "sort": "od-d",
                 "f": "",
@@ -258,10 +261,10 @@ def main():
             for bid_no, group_rows in groups.items():
                 
                 bid_id = get_bid_id(bidno=bid_no)
-                new_url = updateStURL2.format(bid = bid_id)
                 if not bid_id:
                     print(f"[{bid_no}] has no bid_id")
                     continue
+                new_url = updateStURL2.format(bid = bid_id)
                 open_url = bid_attachment_url.format(bid = bid_id)
                 try:
                     docs = fetch_docs(bid_id)

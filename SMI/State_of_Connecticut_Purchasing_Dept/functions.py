@@ -444,8 +444,8 @@ def download_files(sb, script_directory, download_path, file_index, file_hash,
         mb_size = bytes_size / (1024 * 1024)
         file_with_ext = os.path.basename(file_path)
         iconverted = get_iconverted_value(file_with_ext)
-
-        if mb_size > 50:
+        valid_ext_to_split = ['pdf', 'PDF']
+        if mb_size > 50 and os.path.splitext(file_path)[1] in valid_ext_to_split:
             split_files = split_pdf(file_path=file_path)
             for file_name, size_in_mb, path in split_files:
                 file[file_index] = {

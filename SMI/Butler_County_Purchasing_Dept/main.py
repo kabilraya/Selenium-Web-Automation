@@ -17,13 +17,61 @@ from functions import download_files,regex_date_filter
 from urllib.parse import urljoin, quote
 from datetime import datetime
 from model.smi_model import SMI
-from kabil_utils.vpn_required_db_insertion import extract_from_json_and_add_to_db
+from kabil_utils.extract_and_insertion import extract_from_json_and_insert
 from kabil_utils.record_data_insertion import insert_into_record_db
 from kabil_utils.db_value_updater import update_value
 from kabil_utils.file_remover import delete_files_in_directory
 from kabil_utils.vpn_disconnet import disconnect_vpn
 import re
 #make all the path 
+
+import atexit
+from datetime import datetime
+
+class Tee:
+    """Writes everything to both the terminal and a log file."""
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()   # so logs survive a crash
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        # fall back to the original stream for anything else (fileno, encoding, etc.)
+        return getattr(self.stream, name)
+
+
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs.txt")
+log_file = open(log_path, "a", encoding="utf-8")   # "a" = append, keeps old runs
+
+log_file.write(f"\n{'=' * 70}\n")
+log_file.write(f"RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+log_file.write(f"{'=' * 70}\n")
+log_file.flush()
+
+sys.stdout = Tee(sys.__stdout__, log_file)
+sys.stderr = Tee(sys.__stderr__, log_file)
+
+
+def _close_log():
+    log_file.write(f"\nRUN ENDED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_file.flush()
+    # put the real streams back BEFORE closing, so late shutdown output is safe
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    log_file.close()
+
+atexit.register(_close_log)
 start_time = time.perf_counter()
 
 script_path = os.path.abspath(__file__)
@@ -55,6 +103,7 @@ with SB (
     xvfb=False,
     guest_mode=False,
     disable_features = "ChromePDFViewer",
+    chromium_arg="--disable-popup-blocking",
     external_pdf = True,
     locale = "en",
 ) as sb:
@@ -69,7 +118,7 @@ with SB (
     tree = html.fromstring(page_source)
     sb.sleep(3)
     
-    bid_nodes = tree.xpath("//table[@class='rpfbids']/tbody/tr")
+    bid_nodes = tree.xpath("//table[@class='rpfbids']//table/tbody/tr[.//a]")
 
     #Creating a top level directory which consists the top level infomation common for all the bids in one websites
     bid_details = {
@@ -106,7 +155,7 @@ with SB (
         directed_link = directed_link[0].get("href","").strip()
         directed_link = urljoin("https://www.bcohio.gov/",directed_link)
 
-        sb.uc_open_with_reconnect(directed_link)
+        sb.uc_open(directed_link)
         sb.sleep(3)
         page_source = sb.get_page_source()
         sb.sleep(3)
@@ -129,7 +178,16 @@ with SB (
             print(download_name)
             file_hash = generate_md5_hash(ecgain = ecgains, bidno = bid_no, filename = download_name )
             # create a session of database to check for duplication of hash and kill the session immediately
-            
+            try:
+                session, _ = create_database_session(database_url=smi_data_url)
+                is_duplicate_hash = check_for_duplicate_hash(session=session, hash=file_hash)
+                session.close()
+                if is_duplicate_hash:
+                    print("Hash Duplication found")
+                    continue
+            except Exception as e:
+                print(f"Session creation failed {e}")
+                continue
             new_file_index = len(bid_details[node_idx]["files_info"]) + 1
             file_url = urljoin("https://www.bcohio.gov/",file_url)
             file_url = quote(file_url, safe="/?%:&")
@@ -157,9 +215,8 @@ with SB (
             json.dump(bid_details, json_file, indent=4, ensure_ascii=False)
 
         print(f"JSON saved to: {json_path}")
-        disconnect_vpn()
-        time.sleep(5)
-        bid_counts = extract_from_json_and_add_to_db(
+        
+        bid_counts = extract_from_json_and_insert(
             json_path=json_path,
             db_url=smi_data_url,
             region_name=region_name,
